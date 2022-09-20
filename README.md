@@ -3,6 +3,16 @@
 A Dissect module implementing a parser for the VMFS file system, used by VMware virtualization software. For more
 information, please see [the documentation](https://dissect.readthedocs.io/en/latest/projects/dissect.vmfs).
 
+## Installation
+
+`dissect.vmfs` is available on [PyPI](https://pypi.org/project/dissect.vmfs/).
+
+```bash
+pip install dissect.vmfs
+```
+
+This module is also automatically installed if you install the `dissect` package.
+
 ## Build and test instructions
 
 This project uses `tox` to build source and wheel distributions. Run the following command from the root folder to build
