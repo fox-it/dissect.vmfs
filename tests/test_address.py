@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
-from dissect.vmfs.resource import address_type, address_fmt
 from dissect.vmfs.c_vmfs import ResourceType
+from dissect.vmfs.resource import address_fmt, address_type
 
 
 def test_address_type():

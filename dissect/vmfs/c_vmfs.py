@@ -3,7 +3,6 @@ import struct
 
 from dissect import cstruct
 
-
 vmfs_def = """
 /* === System file addresses === */
 
