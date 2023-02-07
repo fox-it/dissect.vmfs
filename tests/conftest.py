@@ -1,5 +1,6 @@
-import os
 import gzip
+import os
+
 import pytest
 
 
