@@ -155,6 +155,8 @@ class VMFS:
             self.fh.seek(fdc_base * self.block_size)
             self.resources.open(ResourceType.FD, fileobj=BytesIO(self.fh.read(self.block_size)))
 
+        self.file_descriptor = lru_cache(4096)(self.file_descriptor)
+
         # Open the root directory
         self.root = self.file_descriptor(c_vmfs.ROOT_DIR_DESC_ADDR, "/")
 
@@ -250,7 +252,6 @@ class VMFS:
 
         return node
 
-    @lru_cache(maxsize=4096)
     def file_descriptor(self, address, name=None, filetype=None):
         if address_type(address) != ResourceType.FD:
             raise TypeError(f"Invalid block type: {address_fmt(self, address)}")
