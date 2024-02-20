@@ -58,6 +58,8 @@ class VMFS:
     def __init__(self, volume=None, vh=None, fdc=None, fbb=None, sbc=None, pbc=None, pb2=None, jbc=None):
         self.fh = volume
 
+        self.file_descriptor = lru_cache(maxsize=4096)(self.file_descriptor)
+
         if volume:
             vh_fh = volume
         elif vh:
@@ -250,7 +252,6 @@ class VMFS:
 
         return node
 
-    @lru_cache(maxsize=4096)
     def file_descriptor(self, address, name=None, filetype=None):
         if address_type(address) != ResourceType.FD:
             raise TypeError(f"Invalid block type: {address_fmt(self, address)}")
