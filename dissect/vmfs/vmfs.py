@@ -58,8 +58,6 @@ class VMFS:
     def __init__(self, volume=None, vh=None, fdc=None, fbb=None, sbc=None, pbc=None, pb2=None, jbc=None):
         self.fh = volume
 
-        self.file_descriptor = lru_cache(4096)(self.file_descriptor)
-
         if volume:
             vh_fh = volume
         elif vh:
@@ -156,6 +154,8 @@ class VMFS:
             fdc_base = (c_vmfs.VMFS_HB_BASE + hb_region_size) // self.block_size
             self.fh.seek(fdc_base * self.block_size)
             self.resources.open(ResourceType.FD, fileobj=BytesIO(self.fh.read(self.block_size)))
+
+        self.file_descriptor = lru_cache(4096)(self.file_descriptor)
 
         # Open the root directory
         self.root = self.file_descriptor(c_vmfs.ROOT_DIR_DESC_ADDR, "/")
