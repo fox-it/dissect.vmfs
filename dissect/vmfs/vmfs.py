@@ -58,7 +58,7 @@ class VMFS:
     def __init__(self, volume=None, vh=None, fdc=None, fbb=None, sbc=None, pbc=None, pb2=None, jbc=None):
         self.fh = volume
 
-        self.file_descriptor = lru_cache(maxsize=4096)(self.file_descriptor)
+        self.file_descriptor = lru_cache(4096)(self.file_descriptor)
 
         if volume:
             vh_fh = volume
