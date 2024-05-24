@@ -1,7 +1,7 @@
 import stat
 import struct
 
-from dissect import cstruct
+from dissect.cstruct import cstruct
 
 vmfs_def = """
 /* === System file addresses === */
@@ -368,8 +368,7 @@ struct FS6_DirHeader {
 };
 """
 
-c_vmfs = cstruct.cstruct()
-c_vmfs.load(vmfs_def)
+c_vmfs = cstruct().load(vmfs_def)
 
 ADDRESS_TYPE_MASK = 7
 ResourceType = c_vmfs.ResourceType
