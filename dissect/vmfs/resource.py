@@ -217,8 +217,7 @@ class ResourceManager:
             return None
 
     def _get_resource_for_resource_type(self, resource_type):
-        if not isinstance(resource_type, int):
-            resource_type = resource_type.value
+        resource_type = int(resource_type)
 
         if resource_type not in self.resources:
             raise ValueError(f"No resource opened for type {ResourceType(resource_type)}")
