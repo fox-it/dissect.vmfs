@@ -1,7 +1,11 @@
+from __future__ import annotations
+
+from typing import BinaryIO
+
 from dissect.vmfs import lvm
 
 
-def test_lvm5(vmfs5):
+def test_lvm5(vmfs5: BinaryIO) -> None:
     vs = lvm.LVM(vmfs5)
 
     assert vs.uuid == "61137dd5-d0727810-7ac2-000c29801686"
@@ -17,7 +21,7 @@ def test_lvm5(vmfs5):
     assert extent.last_pe == 0
 
 
-def test_lvm6(vmfs6):
+def test_lvm6(vmfs6: BinaryIO) -> None:
     vs = lvm.LVM(vmfs6)
 
     assert vs.uuid == "6113001e-95afd8fb-d830-000c29801686"

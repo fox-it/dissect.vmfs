@@ -1,11 +1,13 @@
 # References:
 # - /usr/lib/vmware/vmkmod/vmfs3
 # - /bin/vmkfstools
+from __future__ import annotations
 
 import stat
 import struct
 from functools import cached_property, lru_cache
 from io import BytesIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from dissect.util import ts
 from dissect.util.stream import AlignedStream
@@ -34,6 +36,10 @@ from dissect.vmfs.resource import (
     parse_sfb_address,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from datetime import datetime
+
 
 class VMFS:
     """VMFS filesystem implementation.
@@ -55,7 +61,17 @@ class VMFS:
     sacrifice of some human readability. Comments explaining as such are placed where appropriate.
     """
 
-    def __init__(self, volume=None, vh=None, fdc=None, fbb=None, sbc=None, pbc=None, pb2=None, jbc=None):
+    def __init__(
+        self,
+        volume: BinaryIO | None = None,
+        vh: BinaryIO | None = None,
+        fdc: BinaryIO | None = None,
+        fbb: BinaryIO | None = None,
+        sbc: BinaryIO | None = None,
+        pbc: BinaryIO | None = None,
+        pb2: BinaryIO | None = None,
+        jbc: BinaryIO | None = None,
+    ):
         self.fh = volume
 
         if volume:
@@ -225,18 +241,18 @@ class VMFS:
             self.resources.open(ResourceType.JB, address=c_vmfs.JB_DESC_ADDR)
 
     @property
-    def is_vmfs5(self):
+    def is_vmfs5(self) -> bool:
         return self.major_version <= 0x17
 
     @property
-    def is_vmfs6(self):
+    def is_vmfs6(self) -> bool:
         return self.major_version > 0x17
 
-    def get(self, path, node=None):
+    def get(self, path: str | int, node: FileDescriptor | None = None) -> FileDescriptor:
         if isinstance(path, int):
             return self.file_descriptor(path)
 
-        node = self.root if not node else node
+        node = node if node else self.root
 
         parts = path.split("/")
         for p in parts:
@@ -252,13 +268,13 @@ class VMFS:
 
         return node
 
-    def file_descriptor(self, address, name=None, filetype=None):
+    def file_descriptor(self, address: int, name: str | None = None, filetype: int | None = None) -> FileDescriptor:
         if address_type(address) != ResourceType.FD:
             raise TypeError(f"Invalid block type: {address_fmt(self, address)}")
 
         return FileDescriptor(self, address, name, filetype)
 
-    def iter_fd(self):
+    def iter_fd(self) -> Iterator[FileDescriptor]:
         for cluster, resource in self.resources.fdc.iter_resource_locations():
             fd_addr = (cluster << 6) | (resource << 22) | ResourceType.FD.value
             yield self.file_descriptor(fd_addr)
@@ -288,7 +304,7 @@ class FileDescriptor:
     again (mostly) an array of directory entries.
     """
 
-    def __init__(self, vmfs, address, name=None, filetype=None):
+    def __init__(self, vmfs: VMFS, address: int, name: str | None = None, filetype: int | None = None):
         self.vmfs = vmfs
         self.address = address
         self.name = name
@@ -298,42 +314,42 @@ class FileDescriptor:
         self._lock_info = None
         self._desc = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<FileDescriptor address={address_fmt(self.vmfs, self.address)} name={self.name}>"
 
     @cached_property
-    def raw(self):
+    def raw(self) -> memoryview:
         """The raw buffer of this file descriptor."""
         return memoryview(self.vmfs.resources.fdc.get(self.address))
 
     @cached_property
-    def lock_info(self):
+    def lock_info(self) -> c_vmfs.FS3_DiskLockInfo:
         """The parsed lock info of this file descriptor."""
         return c_vmfs.FS3_DiskLockInfo(self.raw)
 
     @cached_property
-    def descriptor(self):
+    def descriptor(self) -> c_vmfs.FS3_FileDescriptor:
         """The parsed file descriptor struct for this file descriptor."""
         desc_offset = self.vmfs.descriptor.mdAlignment or c_vmfs.VMFS5_MD_ALIGNMENT
         return c_vmfs.FS3_FileDescriptor(self.raw[desc_offset:])
 
     @property
-    def parent(self):
+    def parent(self) -> FileDescriptor | None:
         parent_fd = self.descriptor.parentFD
         return self.vmfs.file_descriptor(parent_fd) if parent_fd else None
 
     @property
-    def size(self):
+    def size(self) -> int:
         """The size of this file."""
         return self.descriptor.length
 
     @property
-    def type(self):
+    def type(self) -> int:
         """The type of this file."""
         return self._type or self.descriptor.type
 
     @property
-    def zla(self):
+    def zla(self) -> int:
         """The ZLA of this file."""
         # This is how vmfs-tool does it
         # Don't think this is actually how the ZLA works, but let's roll with it for now
@@ -343,73 +359,72 @@ class FileDescriptor:
         return zla
 
     @property
-    def mode(self):
+    def mode(self) -> int:
         """The file mode of this file."""
         if stat.S_IFMT(self.descriptor.mode) == stat.S_IFDIR:
             return self.descriptor.mode
-        else:
-            return self.descriptor.mode | type_to_mode(self.type)
+        return self.descriptor.mode | type_to_mode(self.type)
 
     @property
-    def block_size(self):
+    def block_size(self) -> int:
         """The file specific block size of this file."""
         return self.descriptor.blockSize
 
     @cached_property
-    def blocks(self):
+    def blocks(self) -> list[int]:
         """The block array of this file."""
         block_buf = self.raw[self.vmfs._fd_block_data_offset :]
         ctype = c_vmfs.uint32 if self.vmfs.is_vmfs5 else c_vmfs.uint64
         return ctype[self.vmfs._fd_block_count](block_buf)
 
     @cached_property
-    def atime(self):
+    def atime(self) -> datetime:
         """The last access time of this file."""
         return ts.from_unix(self.descriptor.accessTime)
 
     @cached_property
-    def mtime(self):
+    def mtime(self) -> datetime:
         """The last modified time of this file."""
         return ts.from_unix(self.descriptor.modificationTime)
 
     @cached_property
-    def ctime(self):
+    def ctime(self) -> datetime:
         """The creation time of this file."""
         return ts.from_unix(self.descriptor.creationTime)
 
     @cached_property
-    def link(self):
+    def link(self) -> str:
         """The destination of this file, if it's a symlink."""
         if not self.is_symlink():
             raise NotASymlinkError(f"{self} is not a symlink")
 
         return self.open().read().decode("utf-8")
 
-    def is_dir(self):
+    def is_dir(self) -> bool:
         """Is this file a directory?"""
         return self.type == FileType.Directory
 
-    def is_file(self):
+    def is_file(self) -> bool:
         """Is this file a regular file?"""
         return self.type == FileType.Regular
 
-    def is_symlink(self):
+    def is_symlink(self) -> bool:
         """Is this file a symlink?"""
         return self.type == FileType.Symlink
 
-    def is_system(self):
+    def is_system(self) -> bool:
         """Is this file a system file?"""
         return self.type == FileType.System
 
-    def is_rdm(self):
+    def is_rdm(self) -> bool:
         """Is this file a RDM file?"""
         return self.type == FileType.RDM
 
-    def listdir(self):
+    def listdir(self) -> dict[str, FileDescriptor]:
         """A dictionary of the content of this directory, if this file is a directory."""
         return {n.name: n for n in self.iterdir()}
 
-    def iterdir(self):
+    def iterdir(self) -> Iterator[FileDescriptor]:
         """Iterate file descriptors of the directory entries, if this file is a directory."""
         if not self.is_dir():
             raise NotADirectoryError(repr(self))
@@ -419,7 +434,7 @@ class FileDescriptor:
         else:
             yield from self._iterdir_vmfs6()
 
-    def _iterdir_vmfs5(self):
+    def _iterdir_vmfs5(self) -> Iterator[FileDescriptor]:
         buf = self.open()
 
         num_entries = self.size // c_vmfs.VMFS5_DIR_ENTRY_SIZE
@@ -430,7 +445,7 @@ class FileDescriptor:
 
             yield self.vmfs.file_descriptor(dirent.address, dirent.name.split(b"\x00")[0].decode(), dirent.type)
 
-    def _iterdir_vmfs6(self):
+    def _iterdir_vmfs6(self) -> Iterator[FileDescriptor]:
         # Directories in VMFS6 are a bit more complex.
         # They start out with a header/metadata block, which contains some useful info.
         # This block also contains the . and .. entries, as well as a bitmap?
@@ -480,7 +495,7 @@ class FileDescriptor:
 
                 yield self.vmfs.file_descriptor(dirent.address, dirent.name.split(b"\x00")[0].decode(), dirent.type)
 
-    def open(self):
+    def open(self) -> BytesIO | BlockStream:
         """Open this file and return a new file-like object."""
         if self.is_rdm():
             raise NotImplementedError(f"Can't open RDM file {self}")
@@ -506,7 +521,7 @@ class BlockStream(AlignedStream):
     LFB (large filesystem block).
     """
 
-    def __init__(self, descriptor):
+    def __init__(self, descriptor: FileDescriptor):
         self.descriptor = descriptor
         self.vmfs = descriptor.vmfs
         self.blocks = self.descriptor.blocks
@@ -524,12 +539,12 @@ class BlockStream(AlignedStream):
 
         super().__init__(self.descriptor.size)
 
-    def _offset_to_block(self, offset):
+    def _offset_to_block(self, offset: int) -> int:
         idx = offset >> self.block_offset_shift
         if self.zla in (ResourceType.FB, ResourceType.SB):
             return self.blocks[idx]
 
-        elif self.zla == ResourceType.PB:
+        if self.zla == ResourceType.PB:
             # This is equivalent to divmod(idx, addressesPerPb)
             if self.vmfs.is_vmfs5:
                 # Don't think this really means "vmfs5_extension"
@@ -546,54 +561,51 @@ class BlockStream(AlignedStream):
                     secondary_pb_buf = self.vmfs.resources.pbc.get(secondary_block)
 
                     return _get_uint32_index(secondary_pb_buf, tertiary_idx)
-                else:
-                    # Single indirection
-                    primary_idx = (idx >> self.vmfs._pb_index_shift) & ((1 << self.vmfs._pb_index_shift) - 1)
-                    secondary_idx = idx & ((1 << self.vmfs._pb_index_shift) - 1)
+                # Single indirection
+                primary_idx = (idx >> self.vmfs._pb_index_shift) & ((1 << self.vmfs._pb_index_shift) - 1)
+                secondary_idx = idx & ((1 << self.vmfs._pb_index_shift) - 1)
 
-                    primary_block = self.blocks[primary_idx]
-                    primary_pb_buf = self.vmfs.resources.pbc.get(primary_block)
+                primary_block = self.blocks[primary_idx]
+                primary_pb_buf = self.vmfs.resources.pbc.get(primary_block)
 
-                    return _get_uint32_index(primary_pb_buf, secondary_idx)
-            else:
-                if self.vmfs5_extension:
-                    # Double indirection
-                    primary_idx = idx >> (2 * self.vmfs._pb_index_shift)
-                    secondary_idx = (idx >> self.vmfs._pb_index_shift) & ((1 << self.vmfs._pbc_index_shift) - 1)
-                    tertiary_idx = idx & ((1 << self.vmfs._pbc_index_shift) - 1)
+                return _get_uint32_index(primary_pb_buf, secondary_idx)
+            if self.vmfs5_extension:
+                # Double indirection
+                primary_idx = idx >> (2 * self.vmfs._pb_index_shift)
+                secondary_idx = (idx >> self.vmfs._pb_index_shift) & ((1 << self.vmfs._pbc_index_shift) - 1)
+                tertiary_idx = idx & ((1 << self.vmfs._pbc_index_shift) - 1)
 
-                    primary_block = self.blocks[primary_idx]
-                    primary_pb_buf = self.vmfs.resources.sbc.get(primary_block)
+                primary_block = self.blocks[primary_idx]
+                primary_pb_buf = self.vmfs.resources.sbc.get(primary_block)
 
-                    # NOTE: can become LFB here?
-                    secondary_block = _get_uint64_index(primary_pb_buf, secondary_idx)
+                # NOTE: can become LFB here?
+                secondary_block = _get_uint64_index(primary_pb_buf, secondary_idx)
 
-                    if address_type(secondary_block) == ResourceType.LFB:
-                        return secondary_block
+                if address_type(secondary_block) == ResourceType.LFB:
+                    return secondary_block
 
-                    secondary_pb_buf = self.vmfs.resources.sbc.get(secondary_block)
+                secondary_pb_buf = self.vmfs.resources.sbc.get(secondary_block)
 
-                    # NOTE: there are some flags that can influence the final index
-                    # NOTE: can become LFB here?
-                    return _get_uint64_index(secondary_pb_buf, tertiary_idx)
-                else:
-                    # Single indirection
-                    primary_idx = idx >> self.vmfs._pb_index_shift
-                    secondary_idx = idx & ((1 << self.vmfs._pbc_index_shift) - 1)
+                # NOTE: there are some flags that can influence the final index
+                # NOTE: can become LFB here?
+                return _get_uint64_index(secondary_pb_buf, tertiary_idx)
+            # Single indirection
+            primary_idx = idx >> self.vmfs._pb_index_shift
+            secondary_idx = idx & ((1 << self.vmfs._pbc_index_shift) - 1)
 
-                    # NOTE: can become LFB here?
-                    primary_block = self.blocks[primary_idx]
+            # NOTE: can become LFB here?
+            primary_block = self.blocks[primary_idx]
 
-                    if address_type(primary_block) == ResourceType.LFB:
-                        return primary_block
+            if address_type(primary_block) == ResourceType.LFB:
+                return primary_block
 
-                    primary_pb_buf = self.vmfs.resources.sbc.get(primary_block)
+            primary_pb_buf = self.vmfs.resources.sbc.get(primary_block)
 
-                    # NOTE: there are some flags that can influence the final index
-                    # NOTE: can become LFB here?
-                    return _get_uint64_index(primary_pb_buf, secondary_idx)
+            # NOTE: there are some flags that can influence the final index
+            # NOTE: can become LFB here?
+            return _get_uint64_index(primary_pb_buf, secondary_idx)
 
-        elif self.zla == ResourceType.PB2:
+        if self.zla == ResourceType.PB2:
             # This is equivalent to divmod(idx, addressesPerPb2)
             primary_idx = idx >> (2 * self.vmfs._pb_index_shift)
             secondary_idx = idx & ((1 << self.vmfs._pb_index_shift) - 1)
@@ -603,12 +615,10 @@ class BlockStream(AlignedStream):
 
             if self.vmfs.is_vmfs5:
                 return _get_uint32_index(primary_pb_buf, secondary_idx)
-            else:
-                return _get_uint64_index(primary_pb_buf, secondary_idx)
-        else:
-            raise ValueError(f"Unexpected ZLA in {self.descriptor}: {self.zla}")
+            return _get_uint64_index(primary_pb_buf, secondary_idx)
+        raise ValueError(f"Unexpected ZLA in {self.descriptor}: {self.zla}")
 
-    def _read(self, offset, length):
+    def _read(self, offset: int, length: int) -> bytes:
         r = []
         while length > 0:
             block_address = self._offset_to_block(offset)
@@ -662,7 +672,7 @@ class BlockStream(AlignedStream):
         return b"".join(r)
 
 
-def _read_offset_and_length(offset, length, block_size):
+def _read_offset_and_length(offset: int, length: int, block_size: int) -> tuple[int, int]:
     """Convenience function to calculate in-block offsets and remaining read sizes."""
     offset_in_block = offset % block_size
     remaining_in_block = block_size - offset_in_block
@@ -671,11 +681,11 @@ def _read_offset_and_length(offset, length, block_size):
     return offset_in_block, read_length
 
 
-def _get_uint32_index(buf, index):
+def _get_uint32_index(buf: bytes, index: int) -> int:
     """Convenience function to index into a uint32 sized array."""
     return struct.unpack("<I", buf[index * 4 : (index * 4) + 4])[0]
 
 
-def _get_uint64_index(buf, index):
+def _get_uint64_index(buf: bytes, index: int) -> int:
     """Convenience function to index into a uint64 sized array."""
     return struct.unpack("<Q", buf[index * 8 : (index * 8) + 8])[0]

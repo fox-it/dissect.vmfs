@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import io
+from typing import BinaryIO
 
 from dissect.vmfs import lvm, vmfs
 
 
-def test_vmfs5(vmfs5):
+def test_vmfs5(vmfs5: BinaryIO) -> None:
     fh = lvm.LVM(vmfs5)
     fs = vmfs.VMFS(fh)
 
@@ -30,7 +33,7 @@ def test_vmfs5(vmfs5):
     verify_fs_content(fs)
 
 
-def test_vmfs6(vmfs6):
+def test_vmfs6(vmfs6: BinaryIO) -> None:
     fh = lvm.LVM(vmfs6)
     fs = vmfs.VMFS(fh)
 
@@ -59,7 +62,7 @@ def test_vmfs6(vmfs6):
     verify_fs_content(fs)
 
 
-def verify_fs_content(fs):
+def verify_fs_content(fs: vmfs.VMFS) -> None:
     root_entries = fs.root.listdir()
 
     assert ".fbb.sf" in root_entries

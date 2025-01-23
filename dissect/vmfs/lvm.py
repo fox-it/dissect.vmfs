@@ -1,7 +1,9 @@
 # References:
 # - /usr/lib/vmware/vmkmod/lvmdriver
+from __future__ import annotations
 
 from bisect import bisect_right
+from typing import BinaryIO
 
 from dissect.util.stream import AlignedStream
 
@@ -26,8 +28,8 @@ class LVM(AlignedStream):
     VMFS should start at LVM dataOffset + 0x200000
     """
 
-    def __init__(self, fh):
-        fhs = [fh] if not type(fh) is list else fh
+    def __init__(self, fh: BinaryIO | list[BinaryIO]):
+        fhs = [fh] if type(fh) is not list else fh
 
         size = None
         self.uuid = None
@@ -56,7 +58,7 @@ class LVM(AlignedStream):
 
         super().__init__(size)
 
-    def _read(self, offset, length):
+    def _read(self, offset: int, length: int) -> bytes:
         r = []
 
         pe_offset = offset // VMFS_LVM_PE_SIZE
@@ -93,7 +95,7 @@ class Extent(AlignedStream):
     - 0x900000
     """
 
-    def __init__(self, fh):
+    def __init__(self, fh: BinaryIO):
         self.fh = fh
 
         fh.seek(c_vmfs.VMFS_LVM_DEVICE_META_BASE)
@@ -126,6 +128,6 @@ class Extent(AlignedStream):
 
         super().__init__(self.metadata.volumeSize)
 
-    def _read(self, offset, length):
+    def _read(self, offset: int, length: int) -> bytes:
         self.fh.seek(self.metadata.dataOffset + offset)
         return self.fh.read(length)
