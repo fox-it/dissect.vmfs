@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import stat
 import struct
 
@@ -375,21 +377,22 @@ ResourceType = c_vmfs.ResourceType
 FileType = c_vmfs.FileType
 
 
-def bsf(value, size=32):
+def bsf(value: int, size: int = 32) -> int:
     """Count the number of zero bits in an integer of a given size."""
     for i in range(size):
         if value & (1 << i):
             return i
+    return 0
 
 
-def type_to_mode(type_):
+def type_to_mode(type_: FileType) -> int:
     if type_ == FileType.Directory:
         return stat.S_IFDIR
-    elif type_ == FileType.Symlink:
+    if type_ == FileType.Symlink:
         return stat.S_IFLNK
     return stat.S_IFREG
 
 
-def vmfs_uuid(buf):
+def vmfs_uuid(buf: bytes) -> str:
     uuid1, uuid2, uuid3, uuid4 = struct.unpack("<IIH6s", buf)
     return f"{uuid1:08x}-{uuid2:08x}-{uuid3:04x}-{uuid4.hex()}"

@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from unittest.mock import Mock
 
 from dissect.vmfs.c_vmfs import ResourceType
 from dissect.vmfs.resource import address_fmt, address_type
 
 
-def test_address_type():
+def test_address_type() -> None:
     assert address_type(0x00000001) == ResourceType.FB
     assert address_type(0x00000002) == ResourceType.SB
     assert address_type(0x00000003) == ResourceType.PB
@@ -14,7 +16,7 @@ def test_address_type():
     assert address_type(0x00000007) == ResourceType.LFB
 
 
-def test_address_fmt_vmfs5():
+def test_address_fmt_vmfs5() -> None:
     mock_vmfs5 = Mock()
     mock_vmfs5.is_vmfs5 = True
     mock_vmfs5.is_vmfs6 = False
@@ -61,7 +63,7 @@ def test_address_fmt_vmfs5():
     assert address_fmt(mock_vmfs5, 0x00000000) == "<Null address>"
 
 
-def test_address_fmt_vmfs6():
+def test_address_fmt_vmfs6() -> None:
     mock_vmfs6 = Mock()
     mock_vmfs6.is_vmfs5 = False
     mock_vmfs6.is_vmfs6 = True

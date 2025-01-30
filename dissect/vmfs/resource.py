@@ -1,8 +1,17 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, BinaryIO
+
 from dissect.vmfs.c_vmfs import FileType, ResourceType, c_vmfs
 from dissect.vmfs.exceptions import FileNotFoundError
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-def address_type(addr):
+    from dissect.vmfs.vmfs import VMFS
+
+
+def address_type(addr: int) -> int:
     """Return the address type.
 
     Address type is encoded in the lower 3 bits.
@@ -10,7 +19,7 @@ def address_type(addr):
     return addr & 0b111
 
 
-def address_fmt(vmfs, address):
+def address_fmt(vmfs: VMFS, address: int) -> str:
     """Create a human readable representation of an address.
 
     References:
@@ -25,46 +34,45 @@ def address_fmt(vmfs, address):
         if vmfs.is_vmfs5:
             block = parse_fb_address(vmfs, address)
             return f"<FB tbz={tbz != 0} cow={cow} {block}>"
-        else:
-            cluster, resource = parse_sfb_address(vmfs, address)
-            return f"<SFB tbz=0x{tbz:x} cow={cow} c{cluster} r{resource}>"
+        cluster, resource = parse_sfb_address(vmfs, address)
+        return f"<SFB tbz=0x{tbz:x} cow={cow} c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.SB:
+    if addr_type == ResourceType.SB:
         cow = address & cow_mask != 0
         cluster, resource = parse_sb_address(vmfs, address)
         return f"<SB cow={cow} c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.PB:
+    if addr_type == ResourceType.PB:
         cow = address & cow_mask != 0
         cluster, resource = parse_pb_address(vmfs, address)
         return f"<PB cow={cow} c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.FD:
+    if addr_type == ResourceType.FD:
         cluster, resource = parse_fd_address(vmfs, address)
         return f"<FD c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.PB2:
+    if addr_type == ResourceType.PB2:
         cow = address & cow_mask != 0
         cluster, resource = parse_pb_address(vmfs, address)
         return f"<PB2 cow={cow} c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.JB:
+    if addr_type == ResourceType.JB:
         cluster, resource = parse_jb_address(vmfs, address)
         return f"<JB c{cluster} r{resource}>"
 
-    elif addr_type == ResourceType.LFB:
+    if addr_type == ResourceType.LFB:
         tbz = address_tbz(vmfs, address)
         cow = address & cow_mask != 0
         block = parse_lfb_address(vmfs, address)
         return f"<LFB tbz=0x{tbz:x} cow={cow} {block}>"
 
-    elif addr_type == 0:
+    if addr_type == 0:
         return "<Null address>"
 
     return f"<Invalid address 0x{address:x}>"
 
 
-def address_tbz(vmfs, address):
+def address_tbz(vmfs: VMFS, address: int) -> int | None:
     """Return whether the TBZ flag is set.
 
     The TBZ flag is only valid for FB and LFB addresses.
@@ -73,12 +81,12 @@ def address_tbz(vmfs, address):
 
     if vmfs.is_vmfs5 and addr_type == ResourceType.FB:
         return address & c_vmfs.ADDRESS_FLAG_TBZ
-    elif vmfs.is_vmfs6 and addr_type in (ResourceType.FB, ResourceType.LFB):
+    if vmfs.is_vmfs6 and addr_type in (ResourceType.FB, ResourceType.LFB):
         return (address & c_vmfs.ADDRESS_FLAG_TBZ_VMFS6) >> 7
     return None
 
 
-def parse_fb_address(vmfs, address):
+def parse_fb_address(vmfs: VMFS, address: int) -> int:
     """Parse a FB address and return the block.
 
     VMFS5 encoding:
@@ -87,7 +95,7 @@ def parse_fb_address(vmfs, address):
     return (address & 0xFFFFFFC0) >> 6
 
 
-def parse_sfb_address(vmfs, address):
+def parse_sfb_address(vmfs: VMFS, address: int) -> tuple[int, int]:
     """Parse a SFB address and return the cluster and resource.
 
     SFB (small file block) in VMFS6 is what FB was in VMFS5.
@@ -101,7 +109,7 @@ def parse_sfb_address(vmfs, address):
     return cluster, resource
 
 
-def parse_sb_address(vmfs, address):
+def parse_sb_address(vmfs: VMFS, address: int) -> tuple[int, int]:
     """Parse a SB address and return the cluster and resource.
 
     VMFS5 encoding:
@@ -125,7 +133,7 @@ def parse_sb_address(vmfs, address):
     return cluster, resource
 
 
-def parse_pb_address(vmfs, address):
+def parse_pb_address(vmfs: VMFS, address: int) -> tuple[int, int]:
     """Parse a PB address and return the cluster and resource.
 
     Encoding:
@@ -145,7 +153,7 @@ def parse_pb_address(vmfs, address):
     return cluster, resource
 
 
-def parse_fd_address(vmfs, address):
+def parse_fd_address(vmfs: VMFS, address: int) -> tuple[int, int]:
     """Parse a FD address and return the cluster and resource.
 
     Encoding:
@@ -157,7 +165,7 @@ def parse_fd_address(vmfs, address):
     return cluster, resource
 
 
-def parse_jb_address(vmfs, address):
+def parse_jb_address(vmfs: VMFS, address: int) -> tuple[int, int]:
     """Parse a JB address and return the cluster and resource.
 
     Encoding:
@@ -169,7 +177,7 @@ def parse_jb_address(vmfs, address):
     return cluster, resource
 
 
-def parse_lfb_address(vmfs, address):
+def parse_lfb_address(vmfs: VMFS, address: int) -> int:
     """Parse a LFB address and return the block.
 
     Encoding:
@@ -179,11 +187,11 @@ def parse_lfb_address(vmfs, address):
 
 
 class ResourceManager:
-    def __init__(self, vmfs):
+    def __init__(self, vmfs: VMFS):
         self.vmfs = vmfs
         self.resources = {}
 
-    def open(self, resource_type, address=None, fileobj=None):
+    def open(self, resource_type: ResourceType, address: int | None = None, fileobj: BinaryIO | None = None) -> None:
         if resource_type in self.resources:
             raise ValueError(f"Resource already opened: {resource_type}")
 
@@ -197,7 +205,7 @@ class ResourceManager:
             try:
                 fd = self.vmfs.file_descriptor(address)
             except FileNotFoundError:
-                return None
+                return
 
             if (
                 fd.descriptor.address != address
@@ -205,7 +213,7 @@ class ResourceManager:
                 or fd.type != FileType.System
                 or fd.size == 0
             ):
-                return None
+                return
 
             fileobj = fd.open()
 
@@ -214,60 +222,56 @@ class ResourceManager:
                 self.vmfs, resource_type, address, fileobj
             )
         except Exception:
-            return None
+            return
 
-    def _get_resource_for_resource_type(self, resource_type):
+    def _get_resource_for_resource_type(self, resource_type: ResourceType) -> ResourceFile:
         resource_type = int(resource_type)
 
         if resource_type not in self.resources:
             raise ValueError(f"No resource opened for type {ResourceType(resource_type)}")
         return self.resources[resource_type]
 
-    def _get_resource_for_address(self, address):
+    def _get_resource_for_address(self, address: int) -> ResourceFile:
         addr_type = address_type(address)
         return self._get_resource_for_resource_type(addr_type)
 
-    def get(self, address):
+    def get(self, address: int) -> bytes:
         resource = self._get_resource_for_address(address)
         return resource.get(address)
 
-    def get_resource(self, resource_type, cluster, resource):
+    def get_resource(self, resource_type: ResourceType, cluster: int, resource: int) -> bytes:
         return self._get_resource_for_resource_type(resource_type).get_resource(cluster, resource)
 
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         resource = self._get_resource_for_address(address)
         return resource.parse_address(address)
 
-    def resolve_address(self, address):
-        resource = self._get_resource_for_address(address)
-        return resource.resolve_address(address)
-
     @property
-    def fdc(self):
+    def fdc(self) -> FileDescriptorResource:
         return self._get_resource_for_resource_type(ResourceType.FD)
 
     @property
-    def pb2(self):
+    def pb2(self) -> PointerBlockResource:
         return self._get_resource_for_resource_type(ResourceType.PB2)
 
     @property
-    def pbc(self):
+    def pbc(self) -> PointerBlockResource:
         return self._get_resource_for_resource_type(ResourceType.PB)
 
     @property
-    def sbc(self):
+    def sbc(self) -> SubBlockResource:
         return self._get_resource_for_resource_type(ResourceType.SB)
 
     @property
-    def fbb(self):
+    def fbb(self) -> SmallFileBlockResource:
         return self._get_resource_for_resource_type(ResourceType.FB)
 
     @property
-    def lfb(self):
+    def lfb(self) -> LargeFileBlockResource:
         return self._get_resource_for_resource_type(ResourceType.LFB)
 
     @property
-    def jbc(self):
+    def jbc(self) -> JournalBlockResource:
         return self._get_resource_for_resource_type(ResourceType.JB)
 
 
@@ -280,7 +284,7 @@ class ResourceFile:
     up of the clusters ("bitmaps"), followed by the actual resource items.
     """
 
-    def __init__(self, vmfs, resource_type, address, fh):
+    def __init__(self, vmfs: VMFS, resource_type: ResourceType, address: int, fh: BinaryIO):
         self.vmfs = vmfs
         self.type = resource_type
         self.address = address
@@ -298,17 +302,17 @@ class ResourceFile:
             self._cluster_resource_offset = self.metadata.clustersPerClusterGroup * alignment
         self._cluster_size = self.metadata.resourcePerCluster * self.metadata.resourceSize
 
-    def iter_resource_locations(self):
+    def iter_resource_locations(self) -> Iterator[tuple[int, int]]:
         resource_per_cluster = self.metadata.resourcePerCluster
         num_resources = (self.metadata.numResourcesHi << 32) | self.metadata.numResourcesLo
         for abs_resource in range(num_resources):
             yield divmod(abs_resource, resource_per_cluster)
 
     @property
-    def resource_size(self):
+    def resource_size(self) -> int:
         return self.metadata.resourceSize
 
-    def _cluster_header_offset(self, cluster):
+    def _cluster_header_offset(self, cluster: int) -> int:
         """Calculate the offset of a specific cluster header into the resource file."""
         md = self.metadata
         if self.vmfs.is_vmfs5:
@@ -316,33 +320,31 @@ class ResourceFile:
             group_offset = group * md.clusterGroupSize
             cluster_offset = rel_cluster << 10
             return md.firstClusterGroupOffset + group_offset + cluster_offset
-        elif md.flags & 2 == 0:
+        if md.flags & 2 == 0:
             group, rel_cluster = divmod(cluster, md.clustersPerClusterGroup)
             group_offset = group * md.clusterGroupSize
             cluster_offset = rel_cluster * (2 * self.vmfs.descriptor.mdAlignment)
             return md.firstClusterGroupOffset + group_offset + cluster_offset
-        else:
-            parent_r_per_cg = md.parentResourcesPerCluster * md.parentClustersPerClusterGroup
-            group, rel_cluster = divmod(cluster, parent_r_per_cg)
-            group_offset = group * md.parentClusterGroupSize
-            cluster_offset = md.parentClustersPerClusterGroup * (2 * self.vmfs.descriptor.mdAlignment) + rel_cluster
-            return md.firstClusterGroupOffset + group_offset + cluster_offset
+        parent_r_per_cg = md.parentResourcesPerCluster * md.parentClustersPerClusterGroup
+        group, rel_cluster = divmod(cluster, parent_r_per_cg)
+        group_offset = group * md.parentClusterGroupSize
+        cluster_offset = md.parentClustersPerClusterGroup * (2 * self.vmfs.descriptor.mdAlignment) + rel_cluster
+        return md.firstClusterGroupOffset + group_offset + cluster_offset
 
-    def _cluster_group_offset(self, group):
+    def _cluster_group_offset(self, group: int) -> int:
         """Calculate the offset of a specific cluster group into the resource file."""
         md = self.metadata
         if self.vmfs.is_vmfs5 or (md.flags & 2 == 0):
             # Don't know what this flag means, maybe a compatibility flag for VMFS6 to work with VMFS5 resource files?
             return md.firstClusterGroupOffset + (group * md.clusterGroupSize)
-        else:
-            parent_size = md.parentClustersPerClusterGroup * md.parentSourcesPerCluster // md.clustersPerClusterGroup
-            parent, rel_group = divmod(group, parent_size)
-            parent_offset = parent * md.parentClusterGroupSize
-            alignment = md.parentClustersPerClusterGroup * (2 * self.vmfs.descriptor.mdAlignment)
-            group_offset = rel_group * md.clusterGroupSize
-            return md.firstClusterGroupOffset + parent_offset + group_offset + alignment
+        parent_size = md.parentClustersPerClusterGroup * md.parentSourcesPerCluster // md.clustersPerClusterGroup
+        parent, rel_group = divmod(group, parent_size)
+        parent_offset = parent * md.parentClusterGroupSize
+        alignment = md.parentClustersPerClusterGroup * (2 * self.vmfs.descriptor.mdAlignment)
+        group_offset = rel_group * md.clusterGroupSize
+        return md.firstClusterGroupOffset + parent_offset + group_offset + alignment
 
-    def _resource_offset(self, cluster, resource):
+    def _resource_offset(self, cluster: int, resource: int) -> int:
         """Calculate the offset of a specific resource into the resource file."""
         md = self.metadata
         group, rel_cluster = divmod(cluster, md.clustersPerClusterGroup)
@@ -351,16 +353,16 @@ class ResourceFile:
         resource_offset = resource * md.resourceSize
         return group_offset + self._cluster_resource_offset + cluster_offset + resource_offset
 
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         """Parse an address into a cluster/resource pair to use for looking up a resource."""
         raise NotImplementedError("Needs to be implemented by subclasses")
 
-    def get(self, address):
+    def get(self, address: int) -> bytes:
         """Get the resource belonging to the given address."""
         cluster, resource = self.parse_address(address)
         return self.get_resource(cluster, resource)
 
-    def get_resource(self, cluster, resource):
+    def get_resource(self, cluster: int, resource: int) -> bytes:
         """Get the resource belonging to the given cluster/resource pair."""
         offset = self._resource_offset(cluster, resource)
         self.fh.seek(offset)
@@ -368,36 +370,39 @@ class ResourceFile:
 
 
 class SmallFileBlockResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         if self.vmfs.is_vmfs5:
             block = parse_fb_address(self.vmfs, address)
             return divmod(block, self.metadata.resourcePerCluster)
-        elif self.vmfs.is_vmfs6:
+
+        if self.vmfs.is_vmfs6:
             return parse_sfb_address(self.vmfs, address)
+
+        raise ValueError("Unknown VMFS version")
 
 
 class SubBlockResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         return parse_sb_address(self.vmfs, address)
 
 
 class PointerBlockResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         return parse_pb_address(self.vmfs, address)
 
 
 class FileDescriptorResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         return parse_fd_address(self.vmfs, address)
 
 
 class JournalBlockResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         return parse_jb_address(self.vmfs, address)
 
 
 class LargeFileBlockResource(ResourceFile):
-    def parse_address(self, address):
+    def parse_address(self, address: int) -> tuple[int, int]:
         block = parse_lfb_address(self.vmfs, address)
         return divmod(block, self.metadata.resourcePerCluster)
 
