@@ -2,7 +2,7 @@ class Error(Exception):
     pass
 
 
-class VolumeUnavailable(Error):
+class VolumeNotAvailableError(Error):
     pass
 
 
@@ -23,4 +23,8 @@ class NotADirectoryError(Error, NotADirectoryError):
 
 
 class NotASymlinkError(Error):
+    pass
+
+
+class NotAnRDMFileError(Error):
     pass
