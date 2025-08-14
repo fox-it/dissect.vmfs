@@ -508,29 +508,11 @@ class FileDescriptor:
                 raise FileNotFoundError(f"File not found: {name!r} in {self}")
 
             # Resolve links first
-            while type == FS6_DirBlockType.LINK:
-                offset = (
-                    # Block offset
-                    c_vmfs.FS6_DIR_HEADER_BLOCK_SIZE
-                    + (block * block_size)
-                    # Block header size
-                    + len(c_vmfs.FS6_DirBlockHeader)
-                    # Slot offset
-                    + (slot * len(c_vmfs.FS6_DirLinkGroup))
-                )
-
-                fh.seek(offset)
-                link_group = c_vmfs.FS6_DirLinkGroup(fh)
-                if link_group.hashIndex != hash_idx:
-                    raise FileNotFoundError(f"File not found: {name!r} in {self}")
-
-                for link_idx in range(link_group.totalLinks - link_group.freeLinks):
-                    link = link_group.links[link_idx]
-                    if link.hash == link_hash:
-                        type, block, slot = _dir_parse_location(link.location)
-                        break
-                else:
-                    type, block, slot = _dir_parse_location(link_group.nextGroup)
+            try:
+                while type == FS6_DirBlockType.LINK:
+                    type, block, slot = _dir_link_resolve(self, fh, block, slot, block_size, hash_idx, link_hash)
+            except KeyError as e:
+                raise FileNotFoundError(f"File not found: {name!r} in {self}") from e
 
             if type == FS6_DirBlockType.DIRENT:
                 offset = (
@@ -901,6 +883,48 @@ def _dir_name_hash(name: str, in_root: bool = False) -> tuple[int, int]:
     return ((result >> 16) & 0xFFFF), (
         result % (c_vmfs.FS6_DIR_HASH_MAX_ROOT_ENTRIES if in_root else c_vmfs.FS6_DIR_HASH_MAX_ENTRIES)
     )
+
+
+def _dir_link_resolve(
+    fh: BinaryIO, block: int, slot: int, block_size: int, hash_idx: int, link_hash: int
+) -> tuple[int, int, int]:
+    """Resolve a link group to find the actual directory entry, or the next link group.
+
+    Args:
+        fh: The file-like object of the directory.
+        block: The block number of the link group.
+        slot: The slot number of the link group.
+        block_size: The size of a directory block in bytes.
+        hash_idx: The hash index of the link group.
+        link_hash: The hash value of the link to resolve.
+
+    Returns:
+        A tuple containing the type, block number and slot number of the resolved directory entry or next link group.
+
+    Raises:
+        KeyError: If the link group hash index does not match the expected hash index.
+    """
+    offset = (
+        # Block offset
+        c_vmfs.FS6_DIR_HEADER_BLOCK_SIZE
+        + (block * block_size)
+        # Block header size
+        + len(c_vmfs.FS6_DirBlockHeader)
+        # Slot offset
+        + (slot * len(c_vmfs.FS6_DirLinkGroup))
+    )
+
+    fh.seek(offset)
+    link_group = c_vmfs.FS6_DirLinkGroup(fh)
+    if link_group.hashIndex != hash_idx:
+        raise KeyError(f"Link group hash index {link_group.hashIndex} does not match expected {hash_idx}")
+
+    for link_idx in range(link_group.totalLinks - link_group.freeLinks):
+        link = link_group.links[link_idx]
+        if link.hash == link_hash:
+            return _dir_parse_location(link.location)
+    else:
+        return _dir_parse_location(link_group.nextGroup)
 
 
 class BlockStream(AlignedStream):
