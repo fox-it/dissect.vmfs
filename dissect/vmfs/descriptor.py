@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from datetime import datetime
 
+    from typing_extensions import Self
+
     from dissect.vmfs.vmfs import VMFS
 
 
@@ -68,6 +70,8 @@ class DirEntry:
 class FileDescriptor:
     """VMFS file descriptor implementation.
 
+    See :class:`FileDescriptor5` and :class:`FileDescriptor6` for the VMFS5 and VMFS6 specific implementations.
+
     File descriptors are basically the inodes of VMFS and are all stored in the ``.fdc.sf`` resource.
     They are the combination of a lock block, a metadata block, and a bit of space for data.
     They start with lock information, which allows multiple ESXi hosts to stay in sync and place locks.
@@ -100,16 +104,25 @@ class FileDescriptor:
     through one or more layers of indirection go get to the final filesystem block. View the documentation of
     :class:`BlockStream` for more information.
 
-    Directory entries are also stored very differently between VMFS5 and VMFS6. Refer to :func:`_iterdir_vmfs5`
-    and :func:`_iterdir_vmfs6` for more information on how these work.
+    Directory entries are also stored very differently between VMFS5 and VMFS6. Refer to :
+    func:`FileDescriptor5._iterdir` and :func:`FileDescriptor6._iterdir` for more information on how these work.
     """
+
+    def __new__(cls, vmfs: VMFS, address: int) -> Self:
+        """Create a new file descriptor instance based on the VMFS version."""
+        if cls is not FileDescriptor or (not vmfs.is_vmfs5 and not vmfs.is_vmfs6):
+            return super().__new__(cls)
+
+        if vmfs.is_vmfs5:
+            return FileDescriptor5(vmfs, address)
+        return FileDescriptor6(vmfs, address)
 
     def __init__(self, vmfs: VMFS, address: int):
         self.vmfs = vmfs
         self.address = address
 
     def __repr__(self) -> str:
-        return f"<FileDescriptor address={address_fmt(self.address)}>"
+        return f"<{self.__class__.__name__} address={address_fmt(self.address)}>"
 
     def debug(self) -> str:
         """Return a debug string for this file descriptor.
@@ -290,12 +303,97 @@ class FileDescriptor:
         if not self.is_dir():
             raise NotADirectoryError(repr(self))
 
-        if self.vmfs.is_vmfs5:
-            yield from self._iterdir_vmfs5()
-        else:
-            yield from self._iterdir_vmfs6()
+        yield from self._iterdir()
 
-    def _iterdir_vmfs5(self) -> Iterator[DirEntry]:
+    def _iterdir(self) -> Iterator[DirEntry]:
+        raise NotImplementedError
+
+    def get(self, name: str) -> DirEntry:
+        """Get a child directory entry by name.
+
+        Args:
+            name: The name of the directory entry to get.
+        """
+        if not self.is_dir():
+            raise NotADirectoryError(repr(self))
+
+        return self._get(name)
+
+    def _get(self, name: str) -> DirEntry:
+        raise NotImplementedError
+
+    def open(self) -> BlockStream:
+        """Open a read-only stream for this file descriptor."""
+        if self.is_rdm():
+            # TODO: if we're running on the ESXi host, can we open the RDM file directly?
+            # Something to look into later
+            raise NotImplementedError(f"Can't open RDM file {self}")
+
+        if self.vmfs.fh is None:
+            return BestEffortBlockStream(self)
+
+        return BlockStream(self)
+
+    def _offset_to_block_address(self, offset: int) -> int:
+        """Resolve a given offset to a block address."""
+        raise NotImplementedError
+
+    def _resolve_offset(self, offset: int) -> tuple[int, int]:
+        """Resolve any offset in the file to an offset on disk."""
+        raise NotImplementedError
+
+    def _resolve_resident_offset(self, offset: int) -> int:
+        """Resolve any offset in a file to an offset on disk for resident files.
+
+        References:
+            - ``Fil3_ResolveFileOffsetForSmallData``
+        """
+        if self.zla != FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
+            raise TypeError(f"Invalid ZLA type {self.zla} for resident file {self}")
+
+        if offset > self.vmfs._fd_data_size:
+            raise ValueError(f"Offset {offset} exceeds resident size {self.vmfs._fd_data_size} for {self}")
+
+        return self.lock_info.addr.offset + self.vmfs._fd_data_offset + offset
+
+    def _read_offset_sadpanda(self, offset: int, length: int) -> bytes:
+        """Read a specific offset from a file descriptor, using only available system files.
+
+        This is used when we opened the filesystem with Just a Bunch Of System Files (JBOSF, you heard it here first).
+        We can't read any file blocks since we don't have a volume handle to read from the disk, but some system files
+        (like the subblock file) can still be read directly. So we implement only those blocks here.
+
+        This duplicates a little bit of code from the happy face code (:func:`_resolve_offset`), but that code is
+        explicitly structured like that to be as close to the original VMFS "code" as possible.
+
+        Since most of the subtleties of the differences between VMFS5 and VMFS6 are not relevant here, we
+        implement this in a single function that handles both versions.
+        """
+        if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
+            if offset > self.vmfs._fd_data_size:
+                raise ValueError(f"Offset {offset} exceeds resident size {self.vmfs._fd_data_size} for {self}")
+            start = self.vmfs._fd_size - self.vmfs._fd_data_size + offset
+            end = max(start + length, self.vmfs._fd_size)
+            return self.raw[start:end]
+
+        block = self._offset_to_block_address(offset)
+        if self.vmfs.is_vmfs5:
+            offset_in_block = offset & (self.block_size - 1)
+        else:
+            offset_in_block = offset & ((1 << self.vmfs._sub_block_size_shift) - 1)
+
+        type = address_type(block)
+        if type == FS3_AddrType.SUB_BLOCK and (resource := self.vmfs.resources.get(type)):
+            block = resource.read(block)
+            return block[offset_in_block : offset_in_block + length]
+
+        raise VolumeNotAvailableError(f"Unsupported address type {FS3_AddrType(type)} for block {block:#x} in {self}")
+
+
+class FileDescriptor5(FileDescriptor):
+    """VMFS5 file descriptor implementation."""
+
+    def _iterdir(self) -> Iterator[DirEntry]:
         """Iterate directory entries on VMFS5.
 
         On VMFS5, directories are stored as a simple array of directory entries.
@@ -317,7 +415,90 @@ class FileDescriptor:
                     raw=dirent,
                 )
 
-    def _iterdir_vmfs6(self) -> Iterator[DirEntry]:
+    def _get(self, name: str) -> DirEntry:
+        """Get a child directory entry by name on VMFS5.
+
+        For VMFS5, this just iterates over the directory entries until it finds the entry with the given name.
+        """
+        for entry in self.iterdir():
+            if entry.name == name:
+                return entry
+        else:
+            raise FileNotFoundError(f"File not found: {name!r} in {self}")
+
+    def _offset_to_block_address(self, offset: int) -> int:
+        """Resolve a given offset to a block address.
+
+        References:
+            - ``Fil3FileOffsetToBlockAddrCommonVMFS5``
+            - ``PB3CacheFaultVMFS5``
+            - ``Vol3OpenStage1VMFS5``
+        """
+        block_num = offset >> self.metadata.blockOffsetShift
+
+        if self.zla in (FS3_ZeroLevelAddrType.FILE_BLOCK, FS3_ZeroLevelAddrType.SUB_BLOCK):
+            return self.blocks[block_num]
+
+        if self.zla in (FS3_ZeroLevelAddrType.POINTER_BLOCK, FS3_ZeroLevelAddrType.POINTER2_BLOCK):
+            primary_num = block_num >> self.vmfs._ptr_block_num_shift
+            secondary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
+
+            block = self.blocks[primary_num]
+            pb_buf = self.vmfs.resources.read(block)
+
+            return _get_uint32_index(pb_buf, secondary_num)
+
+        if self.zla == FS3_ZeroLevelAddrType.POINTER_BLOCK_DOUBLE:
+            primary_num = block_num >> (2 * self.vmfs._ptr_block_num_shift)
+            secondary_num = (block_num >> self.vmfs._ptr_block_num_shift) & ((1 << self.vmfs._ptr_block_num_shift) - 1)
+            tertiary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
+
+            block = self.blocks[primary_num]
+            pb_buf = self.vmfs.resources.read(block)
+
+            block = _get_uint32_index(pb_buf, secondary_num)
+            pb_buf = self.vmfs.resources.read(block)
+
+            return _get_uint32_index(pb_buf, tertiary_num)
+
+        raise TypeError(f"Unsupported ZLA type {FS3_ZeroLevelAddrType(self.zla)} for VMFS5")
+
+    def _resolve_offset(self, offset: int) -> tuple[int, int]:
+        """Resolve any offset in a file to an offset on disk.
+
+        Returns a tuple of the resolved offset on disk and the TBZ bit of the block.
+
+        References:
+            - ``Fil3_ResolveFileOffsetAndGetBlockTypeVMFS5``
+        """
+        if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
+            return self._resolve_resident_offset(offset), 0
+
+        block = self._offset_to_block_address(offset)
+        type = address_type(block)
+
+        if resource := self.vmfs.resources.get(type):
+            block_offset = resource.resolve_address(block)
+        elif type == FS3_AddrType.FILE_BLOCK:
+            # No resource available (yet), likely still in filesystem initialization phase
+            block_offset = FileBlockAddr.parse(block) << self.metadata.blockOffsetShift
+        else:
+            raise TypeError(f"Invalid block {Address(block)} for offset {offset:#x} in {self}")
+
+        offset_in_block = offset & (self.block_size - 1)
+
+        tbz = 0
+        if type == FS3_AddrType.FILE_BLOCK:
+            # Mask directly instead of going through Address to avoid unnecessary overhead
+            tbz = (block & 0x20) >> 5
+
+        return block_offset + offset_in_block, tbz
+
+
+class FileDescriptor6(FileDescriptor):
+    """VMFS6 file descriptor implementation."""
+
+    def _iterdir(self) -> Iterator[DirEntry]:
         """Iterate directory entries on VMFS6.
 
         On VMFS6, directories are stored in a more complex way. The directory buffer is block based with
@@ -439,31 +620,7 @@ class FileDescriptor:
                     if remaining_entries == 0:
                         return
 
-    def get(self, name: str) -> DirEntry:
-        """Get a child directory entry by name.
-
-        Args:
-            name: The name of the directory entry to get.
-        """
-        if not self.is_dir():
-            raise NotADirectoryError(repr(self))
-
-        if self.vmfs.is_vmfs5:
-            return self._get_vmfs5(name)
-        return self._get_vmfs6(name)
-
-    def _get_vmfs5(self, name: str) -> DirEntry:
-        """Get a child directory entry by name on VMFS5.
-
-        For VMFS5, this just iterates over the directory entries until it finds the entry with the given name.
-        """
-        for entry in self.iterdir():
-            if entry.name == name:
-                return entry
-        else:
-            raise FileNotFoundError(f"File not found: {name!r} in {self}")
-
-    def _get_vmfs6(self, name: str) -> DirEntry:
+    def _get(self, name: str) -> DirEntry:
         """Get a child directory entry by name for VMFS6.
 
         Looking up a directory entry by name is done by calculating the hash of the name and looking it up in the
@@ -510,7 +667,7 @@ class FileDescriptor:
             # Resolve links first
             try:
                 while type == FS6_DirBlockType.LINK:
-                    type, block, slot = _dir_link_resolve(self, fh, block, slot, block_size, hash_idx, link_hash)
+                    type, block, slot = _dir_link_resolve(fh, block, slot, block_size, hash_idx, link_hash)
             except KeyError as e:
                 raise FileNotFoundError(f"File not found: {name!r} in {self}") from e
 
@@ -536,62 +693,7 @@ class FileDescriptor:
 
         raise FileNotFoundError(f"File not found: {name!r} in {self}")
 
-    def open(self) -> BlockStream:
-        """Open a read-only stream for this file descriptor."""
-        if self.is_rdm():
-            # TODO: if we're running on the ESXi host, can we open the RDM file directly?
-            # Something to look into later
-            raise NotImplementedError(f"Can't open RDM file {self}")
-
-        if self.vmfs.fh is None:
-            return BestEffortBlockStream(self)
-
-        return BlockStream(self)
-
-    def _resolve_offset(self, offset: int) -> tuple[int, int]:
-        """Resolve any offset in the file to an offset on disk."""
-        if self.vmfs.is_vmfs5:
-            return self._resolve_offset_vmfs5(offset)
-        return self._resolve_offset_vmfs6(offset)
-
-    def _offset_to_block_address_vmfs5(self, offset: int) -> int:
-        """Resolve a given offset to a block address.
-
-        References:
-            - ``Fil3FileOffsetToBlockAddrCommonVMFS5``
-            - ``PB3CacheFaultVMFS5``
-            - ``Vol3OpenStage1VMFS5``
-        """
-        block_num = offset >> self.metadata.blockOffsetShift
-
-        if self.zla in (FS3_ZeroLevelAddrType.FILE_BLOCK, FS3_ZeroLevelAddrType.SUB_BLOCK):
-            return self.blocks[block_num]
-
-        if self.zla in (FS3_ZeroLevelAddrType.POINTER_BLOCK, FS3_ZeroLevelAddrType.POINTER2_BLOCK):
-            primary_num = block_num >> self.vmfs._ptr_block_num_shift
-            secondary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
-
-            block = self.blocks[primary_num]
-            pb_buf = self.vmfs.resources.read(block)
-
-            return _get_uint32_index(pb_buf, secondary_num)
-
-        if self.zla == FS3_ZeroLevelAddrType.POINTER_BLOCK_DOUBLE:
-            primary_num = block_num >> (2 * self.vmfs._ptr_block_num_shift)
-            secondary_num = (block_num >> self.vmfs._ptr_block_num_shift) & ((1 << self.vmfs._ptr_block_num_shift) - 1)
-            tertiary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
-
-            block = self.blocks[primary_num]
-            pb_buf = self.vmfs.resources.read(block)
-
-            block = _get_uint32_index(pb_buf, secondary_num)
-            pb_buf = self.vmfs.resources.read(block)
-
-            return _get_uint32_index(pb_buf, tertiary_num)
-
-        raise TypeError(f"Unsupported ZLA type {FS3_ZeroLevelAddrType(self.zla)} for VMFS5")
-
-    def _offset_to_block_address_vmfs6(self, offset: int) -> int:
+    def _offset_to_block_address(self, offset: int) -> int:
         """Resolve a given offset to a block address.
 
         References:
@@ -630,52 +732,7 @@ class FileDescriptor:
 
         raise TypeError(f"Unsupported ZLA type {FS3_ZeroLevelAddrType(self.zla)} for VMFS6")
 
-    def _resolve_resident_offset(self, offset: int) -> int:
-        """Resolve any offset in a file to an offset on disk for resident files.
-
-        References:
-            - ``Fil3_ResolveFileOffsetForSmallData``
-        """
-        if self.zla != FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
-            raise TypeError(f"Invalid ZLA type {self.zla} for resident file {self}")
-
-        if offset > self.vmfs._fd_data_size:
-            raise ValueError(f"Offset {offset} exceeds resident size {self.vmfs._fd_data_size} for {self}")
-
-        return self.lock_info.addr.offset + self.vmfs._fd_data_offset + offset
-
-    def _resolve_offset_vmfs5(self, offset: int) -> tuple[int, int]:
-        """Resolve any offset in a file to an offset on disk.
-
-        Returns a tuple of the resolved offset on disk and the TBZ bit of the block.
-
-        References:
-            - ``Fil3_ResolveFileOffsetAndGetBlockTypeVMFS5``
-        """
-        if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
-            return self._resolve_resident_offset(offset), 0
-
-        block = self._offset_to_block_address_vmfs5(offset)
-        type = address_type(block)
-
-        if resource := self.vmfs.resources.get(type):
-            block_offset = resource.resolve_address(block)
-        elif type == FS3_AddrType.FILE_BLOCK:
-            # No resource available (yet), likely still in filesystem initialization phase
-            block_offset = FileBlockAddr.parse(block) << self.metadata.blockOffsetShift
-        else:
-            raise TypeError(f"Invalid block {Address(block)} for offset {offset:#x} in {self}")
-
-        offset_in_block = offset & (self.block_size - 1)
-
-        tbz = 0
-        if type == FS3_AddrType.FILE_BLOCK:
-            # Mask directly instead of going through Address to avoid unnecessary overhead
-            tbz = (block & 0x20) >> 5
-
-        return block_offset + offset_in_block, tbz
-
-    def _resolve_offset_vmfs6(self, offset: int) -> tuple[int, int]:
+    def _resolve_offset(self, offset: int) -> tuple[int, int]:
         """Resolve any offset in a file to an offset on disk.
 
         Returns a tuple of the offset on disk and the TBZ bitmap of the block.
@@ -686,7 +743,7 @@ class FileDescriptor:
         if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
             return self._resolve_resident_offset(offset), 0
 
-        block = self._offset_to_block_address_vmfs6(offset)
+        block = self._offset_to_block_address(offset)
         type = address_type(block)
 
         if resource := self.vmfs.resources.get(type):
@@ -715,41 +772,6 @@ class FileDescriptor:
             tbz = (block >> 7) & 0xFF
 
         return block_offset + offset_in_block, tbz
-
-    def _read_offset_sadpanda(self, offset: int, length: int) -> bytes:
-        """Read a specific offset from a file descriptor, using only available system files.
-
-        This is used when we initialized the filesystem with just a bunch of system files (JBOSF, you heard it here first).
-        We can't read any file blocks since we don't have a volume handle to read from the disk, but some system files
-        (like the subblock file) can still be read directly. So we implement only those blocks here.
-
-        This duplicates a little bit of code from the happy face code (:func:`_resolve_offset_vmfs5` and
-        :func:`_resolve_offset_vmfs6`), but that code is explicitly structured like that to be as close to the original
-        VMFS code as possible.
-
-        Since most of the subtleties of the differences between VMFS5 and VMFS6 are not relevant here, we
-        implement this in a single function that handles both versions.
-        """
-        if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
-            if offset > self.vmfs._fd_data_size:
-                raise ValueError(f"Offset {offset} exceeds resident size {self.vmfs._fd_data_size} for {self}")
-            start = self.vmfs._fd_size - self.vmfs._fd_data_size + offset
-            end = max(start + length, self.vmfs._fd_size)
-            return self.raw[start:end]
-
-        if self.vmfs.is_vmfs5:
-            block = self._offset_to_block_address_vmfs5(offset)
-            offset_in_block = offset & (self.block_size - 1)
-        else:
-            block = self._offset_to_block_address_vmfs6(offset)
-            offset_in_block = offset & ((1 << self.vmfs._sub_block_size_shift) - 1)
-
-        type = address_type(block)
-        if type == FS3_AddrType.SUB_BLOCK and (resource := self.vmfs.resources.get(type)):
-            block = resource.read(block)
-            return block[offset_in_block : offset_in_block + length]
-
-        raise VolumeNotAvailableError(f"Unsupported address type {FS3_AddrType(type)} for block {block:#x} in {self}")
 
 
 def _iter_dir_allocation_map(buf: bytes) -> Iterator[tuple[int, bool, bool]]:

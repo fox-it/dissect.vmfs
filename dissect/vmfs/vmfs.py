@@ -318,6 +318,7 @@ def _get_sfd_offset(vmfs: VMFS, address: int) -> int:
     _, resource = FileDescriptorAddr.parse(address)
 
     if vmfs.is_vmfs6:
+        # No idea what this exactly calculates yet, just copied from the original kernel module
         cg_offset = (((fsd.mdAlignment << 10) + 0x3FFFFF) & 0xFFFFFFFFFFF00000) + fsd.fdcClusterGroupOffset
 
         resource_size = 2 * fsd.mdAlignment
@@ -331,6 +332,7 @@ def _get_sfd_offset(vmfs: VMFS, address: int) -> int:
         if address == fsd.sddFDAddr:
             return fsd.sddVolAddr
 
+    # No idea what this exactly calculates yet, just copied from the original kernel module
     cg_offset = fsd.fileBlockSize * ((fsd.fileBlockSize + 0x3FFFFF) // fsd.fileBlockSize) + fsd.fdcClusterGroupOffset
     resource_size = 1024
     resource_offset = resource << 11
