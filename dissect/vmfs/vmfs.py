@@ -284,9 +284,9 @@ class VMFS:
         if address_type(address) != FS3_AddrType.FILE_DESCRIPTOR:
             raise TypeError(f"Invalid address type: {address_fmt(address)}")
 
-        if vmfs.is_vmfs5:
+        if self.is_vmfs5:
             cls = FileDescriptor5
-        elif vmfs.is_vmfs6:
+        elif self.is_vmfs6:
             cls = FileDescriptor6
         else:
             cls = FileDescriptor

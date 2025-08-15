@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from datetime import datetime
 
-    from typing_extensions import Self
-
     from dissect.vmfs.vmfs import VMFS
 
 
