@@ -108,15 +108,6 @@ class FileDescriptor:
     func:`FileDescriptor5._iterdir` and :func:`FileDescriptor6._iterdir` for more information on how these work.
     """
 
-    def __new__(cls, vmfs: VMFS, address: int) -> Self:
-        """Create a new file descriptor instance based on the VMFS version."""
-        if cls is not FileDescriptor or (not vmfs.is_vmfs5 and not vmfs.is_vmfs6):
-            return super().__new__(cls)
-
-        if vmfs.is_vmfs5:
-            return FileDescriptor5(vmfs, address)
-        return FileDescriptor6(vmfs, address)
-
     def __init__(self, vmfs: VMFS, address: int):
         self.vmfs = vmfs
         self.address = address
@@ -154,9 +145,16 @@ class FileDescriptor:
         lastSFBClusterNum {fd.lastSFBClusterNum}, numPreAllocBlocks {fd.numPreAllocBlocks}, numPointerBlocks {fd.numPointerBlocks}
         """).strip()  # noqa: E501
 
-    @classmethod
-    def from_bytes(cls, vmfs: VMFS, address: int, buf: bytes) -> FileDescriptor:
-        """Create a :class:`FileDescriptor` from a bytes buffer."""
+    @staticmethod
+    def from_bytes(vmfs: VMFS, address: int, buf: bytes) -> FileDescriptor | FileDescriptor5 | FileDescriptor6:
+        """Create a :class:`FileDescriptor5` or :class:`FileDescriptor6` from a bytes buffer."""
+        if vmfs.is_vmfs5:
+            cls = FileDescriptor5
+        elif vmfs.is_vmfs6:
+            cls = FileDescriptor6
+        else:
+            cls = FileDescriptor
+
         obj = cls(vmfs, address)
         obj.raw = memoryview(buf)
         return obj

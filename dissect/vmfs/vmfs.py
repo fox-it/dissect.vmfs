@@ -14,7 +14,7 @@ from dissect.vmfs.c_vmfs import (
     FS3_ResourceTypeID,
     c_vmfs,
 )
-from dissect.vmfs.descriptor import DirEntry, FileDescriptor
+from dissect.vmfs.descriptor import DirEntry, FileDescriptor, FileDescriptor5, FileDescriptor6
 from dissect.vmfs.exception import (
     FileNotFoundError,
     InvalidHeader,
@@ -284,7 +284,14 @@ class VMFS:
         if address_type(address) != FS3_AddrType.FILE_DESCRIPTOR:
             raise TypeError(f"Invalid address type: {address_fmt(address)}")
 
-        return FileDescriptor(self, address)
+        if vmfs.is_vmfs5:
+            cls = FileDescriptor5
+        elif vmfs.is_vmfs6:
+            cls = FileDescriptor6
+        else:
+            cls = FileDescriptor
+
+        return cls(self, address)
 
     def get(self, path: str | int | DirEntry, node: FileDescriptor | None = None) -> FileDescriptor:
         if isinstance(path, int):
