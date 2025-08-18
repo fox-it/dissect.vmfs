@@ -232,13 +232,19 @@ class FileDescriptor:
 
         Access the mode through the :attr:`metadata` attribute to get the raw mode value.
         """
-        if stat.S_IFMT(self.metadata.mode) == stat.S_IFDIR:
+        if stat.S_IFMT(self.metadata.mode):
+            # If the mode already has a type bit set, return it as is
             return self.metadata.mode
 
-        if self.type == FS3_DescriptorType.SYMLINK:
+        if self.is_dir():
+            return self.metadata.mode | stat.S_IFDIR
+
+        if self.is_symlink():
             return self.metadata.mode | stat.S_IFLNK
-        if self.type == FS3_DescriptorType.RDM:
+
+        if self.is_rdm():
             return self.metadata.mode | stat.S_IFBLK
+
         return self.metadata.mode | stat.S_IFREG
 
     @property
@@ -272,11 +278,11 @@ class FileDescriptor:
 
     def is_dir(self) -> bool:
         """Return whether this file descriptor is a directory."""
-        return self.type == FS3_DescriptorType.DIRECTORY
+        return self.type == FS3_DescriptorType.DIRECTORY or (self.is_system() and stat.S_ISDIR(self.metadata.mode))
 
     def is_file(self) -> bool:
         """Return whether this file descriptor is a regular file."""
-        return self.type == FS3_DescriptorType.REGFILE
+        return self.type == FS3_DescriptorType.REGFILE or (self.is_system() and not stat.S_ISDIR(self.metadata.mode))
 
     def is_symlink(self) -> bool:
         """Return whether this file descriptor is a symlink."""
