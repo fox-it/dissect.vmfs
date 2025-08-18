@@ -1,121 +1,114 @@
 from __future__ import annotations
 
-import stat
-import struct
-
 from dissect.cstruct import cstruct
 
 vmfs_def = """
+/* === Common types === */
+struct UUID {
+    uint32          timeLo;
+    uint32          timeHi;
+    uint16          rand;
+    char            macAddr[6];
+};
+
+struct SCSI_DiskId {
+    uint8           type;
+    uint8           len;
+    uint16          lun;
+    uint8           deviceType;
+    uint8           scsiLevel;
+    char            vendor[8];
+    char            model[16];
+    char            revision[4];
+    char            id[44];
+};
+
+// These types normally have bitfields but we parse those in Python instead (address.py)
+typedef uint32 FS3_Address;
+typedef uint32 FS3_FileBlockAddr;
+typedef uint32 FS3_FDAddr;
+
+struct FS3_VolAddress {
+    uint64 offset;
+};
+
+enum FS3_DescriptorType : uint32 {
+    /* FS3DESC_... */
+    INVALID,
+    VOLUME,
+    DIRECTORY,
+    REGFILE,
+    SYMLINK,
+    SYSFILE,
+    RDM,
+    SENTINEL
+};
+
+enum FS3_AddrType {
+    /* FS3_ADDR_... */
+    INVALID             = 0x0,
+    FILE_BLOCK          = 0x1,
+    SMALL_FILE_BLOCK    = 0x1,                  /* File blocks, but on VMFS6 */
+    SUB_BLOCK           = 0x2,
+    POINTER_BLOCK       = 0x3,
+    FILE_DESCRIPTOR     = 0x4,
+    POINTER2_BLOCK      = 0x5,
+    JOURNAL_BLOCK       = 0x6,
+    LARGE_FILE_BLOCK    = 0x7,
+    SENTINEL            = 0x8,
+};
+
+/* Added, don't have a better name */
+enum FS3_ZeroLevelAddrType {
+    INVALID             = 0x0,
+    FILE_BLOCK          = 0x1,
+    SUB_BLOCK           = 0x2,
+    POINTER_BLOCK       = 0x3,
+    POINTER2_BLOCK      = 0x5,
+    POINTER_BLOCK_DOUBLE = 0x10D0,                  /* Don't have a better name */
+    FILE_DESCRIPTOR_RESIDENT = 0x10D1,              /* Don't have a better name */
+};
+
 /* === System file addresses === */
 
-#define ROOT_DIR_DESC_ADDR              0x00000004
-#define FBB_DESC_ADDR                   0x00400004
-#define FDBC_DESC_ADDR                  0x00800004
-#define PBC_DESC_ADDR                   0x00C00004
-#define SB_DESC_ADDR                    0x01000004
-#define VH_DESC_ADDR                    0x01400004
-#define PB2_DESC_ADDR                   0x01800004
-#define SD_DIR_DESC_ADDR                0x01C00004
-#define JB_DESC_ADDR                    0x02000004
-
-/* === Address flags === */
-
-#define ADDRESS_FLAG_COW                0x10
-#define ADDRESS_FLAG_TBZ                0x20
-#define ADDRESS_FLAG_TBZ_VMFS6          0x7f80
-
-/* === LVM Info === */
-
-#define VMFS_LVM_DEVICE_META_BASE       0x00100000
-#define VMFS_LVM_DEVICE_META_MAGIC      0xC001D00D
-
-#define VMFS5_LVM_INFO_OFFSET           0x00000200
-#define VMFS_LVM_DEVICE_NAME_BASE       0x0017E000
-
-#define VMFS_LVM_PE_BITMAP_BASE         0x00180000
-
-#define VMFS_LVM_PE_SIZE                (256 * 1024 * 1024)
-
-struct LVM_DiskID {
-    uint8       type;                           /* 0x00 */
-    uint8       len;                            /* 0x01 Length of the string in id */
-    uint16      lun;                            /* 0x02 */
-    uint8       devType;                        /* 0x04 */
-    uint8       scsi;                           /* 0x05 */
-    char        name[28];                       /* 0x06 */
-    char        id[44];                         /* 0x22 */
-};
-
-struct LVM_ExtendedMeta {
-    uint32      magic;                          /* 0x00 0xC001D00D */
-    uint32      numPEMaps;                      /* 0x04 */
-    uint64      offset;                         /* 0x08 Offset of this metadata */
-};
-
-struct LVM_DeviceMeta {
-    uint32      magic;                          /* 0x00 0xC001D00D */
-    uint32      majorVersion;                   /* 0x04 aka FormatVersion */
-    uint32      minorVersion;                   /* 0x08 */
-    LVM_DiskID  diskID;                         /* 0x0C */
-    uint32      diskBlockSize;                  /* 0x5a Disk sector size */
-    uint64      volumeSize;                     /* 0x5e Volume size in bytes */
-    uint32      numVolumes;                     /* 0x66 Number of volumes */
-    uint32      numPEs;                         /* 0x6a numPEs for VMFS5? */
-                                                /*      Checked against consumedPEs of volume if VMFS6. */
-    uint32      lastPEindex;                    /* 0x6e lastPEindex */
-    uint32      generation;                     /* 0x72 */
-    uint32      _unknown5;                      /* 0x76 */
-    uint64      dataOffset;                     /* 0x7a dataOffset */
-    char        deviceID[16];                   /* 0x82 devID */
-    uint64      creationTime;                   /* 0x92 */
-    uint64      lastModifiedTime;               /* 0x9a */
-    char        lockUuid[16];                   /* 0xa2 Device locked by this UUID */
-    uint64      lockTime;                       /* 0xb2 Locked at this time */
-    char        _unknown6[4];                   /* 0xba */
-    uint32      numPEMaps;                      /* 0xbe numPEMaps, # PEMaps */
-    uint64      extDeviceMetaOffset;            /* 0xc2 extDeviceMetaOffset */
-    uint32      volumeInfoOffset;               /* 0xca VMFS6 only, relative offset to volume info and device name */
-                                                /*      This is likely a "size" of something, but don't know what */
-    uint32      _unknown9;                      /* 0xce VMFS6 += 0x180000, VMFS5 0x180200, related to bitmaps? */
-    uint32      numPEsVMFS6;                    /* 0xd2 numPEs for VMFS6? */
-                                                /*      numPEs of volume checked against this if VMFS6 */
-};
-
-struct LVM_VolumeInfo {
-    uint64_t    size;                           /* 0x00 Volume size in bytes */
-    uint64_t    _unknown1;                      /* 0x08 */
-    uint32_t    state;                          /* 0x10 Some flag, snapshot? */
-    char        uuidString[64];                 /* 0x14 UUID as string */
-    char        uuid[16];                       /* 0x54 UUID as bytes */
-    uint32_t    _unknown2;                      /* 0x64 Related to UUID, always 1 */
-    uint64_t    creationTime;                   /* 0x68 Time of creation */
-    uint32_t    volumeID;                       /* 0x70 Volume index */
-    uint32_t    numPEs;                         /* 0x74 Number of physical extents */
-    uint64_t    firstPE;                        /* 0x78 First physical extent */
-    uint64_t    lastPE;                         /* 0x80 Last physical extent */
-    uint64_t    lastModifiedTime;               /* 0x88 Time of last metadata update */
-    uint32_t    numDevs;                        /* 0x90 */
-    char        _unknown3[124];                 /* 0x94 */
-    uint32_t    consumedPEs;                    /* 0x110 Consumed physical extents? */
-};
+#define rootDirDescAddr                 0x00000004
+#define fbbDescAddr                     0x00400004
+#define fdbcDescAddr                    0x00800004
+#define pbcDescAddr                     0x00C00004
+#define sbDescAddr                      0x01000004
+#define vhDescAddr                      0x01400004
+#define pb2DescAddr                     0x01800004
+#define sdDirDescAddr                   0x01C00004
+#define jbDescAddr                      0x02000004
+#define unmapDescAddr                   0x02400004
+#define dfDirDescAddr                   0x02800004
 
 /* === Filesystem descriptor === */
 
-#define VMFS_FS3_BASE                   0x00200000
-#define VMFS_FS3_MAGIC                  0x2fabf15e
-#define VMFSL_FS3_MAGIC                 0x2fabf15f
+#define FS3_FS_HEADER_OFFSET            0x200000
+#define FS3_VMFS6_MAJOR_VERSION         24
 
-// Temporary until more info is available
-#define VMFS_HB_BASE                    0x00300000
-#define VMFS5_HB_ENTRY_SIZE             0x200
-#define VMFS5_HB_REGION_SIZE            0x100000
-#define VMFS6_HB_ENTRY_SIZE             0x1000
+#define VMFS_MAGIC_NUMBER               0x2fabf15e
+#define VMFSL_MAGIC_NUMBER              0x2fabf15f
+#define VMFS6_MAGIC_NUMBER              0x2fabf160  /* used? from symbols */
+#define VMFS6L_MAGIC_NUMBER             0x2fabf161
 
-#define VMFS5_MD_ALIGNMENT              0x200
-
-flag FS_CONFIG : uint32 {
-    MAINTENANCE = 0x00000008,
-    SYSTEM = 0x00000800
+flag FS3_Config : uint32 {
+    UNKNOWN1            = 0x00000001,
+    UNKNOWN2            = 0x00000002,
+    DENSE_SBPC          = 0x00000004,               /* /config/VMFS3/intOpts/DenseSBPerCluster */
+    MAINTENANCE         = 0x00000008,
+    UNKNOWN10           = 0x00000010,               /* local VsanD? */
+    UNKNOWN20           = 0x00000020,               /* default? */
+    UNKNOWN40           = 0x00000040,               /* vmkfstools -C vmfs6 <dev> --createResourceOptimizedFS ? */
+    UNKNOWN80           = 0x00000080,
+    LOCAL               = 0x00000100,
+    UNKNOWN200          = 0x00000200,               /* default? */
+    SHARED              = 0x00000400,               /* vmkfstools -C vmfs6 <dev> --isVsanD */
+    OSDATA              = 0x00000800,               /* vmkfstools -C vmfs6l <dev> --isSystem */
+    VSAN                = 0x00001000,
+    UNKNOWN2000         = 0x00002000,               /* default? */
+    UNKNOWN4000         = 0x00004000,
 };
 
 struct FDS_VolInfo {
@@ -127,272 +120,320 @@ struct FS3_Checksum {
     uint64          checksumGen;
 };
 
-struct FS3_Descriptor {
-    uint32      magic;                          /* 0x00 */
-    uint32      majorVersion;                   /* 0x04 */
-    uint8       minorVersion;                   /* 0x08 */
-    char        uuid[16];                       /* 0x09 */
-    FS_CONFIG   config;                         /* 0x19 */
-    char        fsLabel[128];                   /* 0x1d */
-    uint32      diskBlockSize;                  /* 0x9d */
-    uint64      fileBlockSize;                  /* 0xa1 */
-    uint32      creationTime;                   /* 0xa9 */
-    uint32      snapID;                         /* 0xad */
-    FDS_VolInfo volInfo;                        /* 0xb1 */
-    uint32      fdcClusterGroupOffset;          /* 0xd1 */
-    uint32      fdcClustersPerGroup;            /* 0xd5 */
-    uint32      subBlockSize;                   /* 0xd9 */
-    uint32      maxJournalSlotsPerTxn;          /* 0xdd */
-    uint64      pb2VolAddr;                     /* 0xe1 */
-    uint32      pb2FDAddr;                      /* 0xe9 */
-    char        hostUuid[16];                   /* 0xed */
-    uint64      gblGeneration;                  /* 0xfd */
-    uint64      sddVolAddr;                     /* 0x105 */
-    uint32      sddFDAddr;                      /* 0x10d */
-    uint8       checksumType;                   /* 0x111 */
-    uint16      unmapPriority;                  /* 0x112 */
-    char        pad1[4];                        /* 0x114 */
-    uint64      checksumGen;                    /* 0x118 */
-    FS3_Checksum checksum;                      /* 0x120 */
-    uint32      physDiskBlockSize;              /* 0x130 */
-    uint32      mdAlignment;                    /* 0x134 */
-    uint16      sfbToLfbShift;                  /* 0x138 */
-    uint16      reserved16_1;                   /* 0x13a */
-    uint16      reserved16_2;                   /* 0x13c */
-    uint16      ptrBlockShift;                  /* 0x13e */
-    uint16      sfbAddrBits;                    /* 0x140 */
-    uint16      reserved16_3;                   /* 0x142 */
-    uint32      tbzGranularity;                 /* 0x144 */
-    uint32      journalBlockSize;               /* 0x148 */
-    uint32      leaseIntervalMs;                /* 0x14c */
-    uint32      reclaimWindowMs;                /* 0x150 */
-    uint64      localStampUS;                   /* 0x154 */
-    char        localMountOwnerMacAddr[6];      /* 0x15c */
+enum FS3_UnmapPriority : uint16 {
+    NONE                = 0,
+    LOW                 = 1,
+    MEDIUM              = 2,
+    HIGH                = 3,
 };
 
-/* === Heartbeat === */
+enum FS3_UnmapMethod : uint8 {
+    PRIORITY            = 0,
+    FIXED               = 1,
+};
 
-#define HEARTBEAT_FREE                  0xABCDEF01
-#define HEARTBEAT_IN_USE                0xABCDEF02
-
-struct FS3_Heartbeat {
-    uint32      state;                          /* 0x00 */
-    uint64      address;                        /* 0x04 */
-    uint64      hbGeneration;                   /* 0x0c */
-    uint64      stampUS;                        /* 0x14 */
-    char        owner[16];                      /* 0x1c */
-    uint32      journalAddress;                 /* 0x2c */
-    uint32      driveX;                         /* 0x30 drv %u.%u */
-    uint8       driveY;                         /* 0x34 */
-    uint8       lockImpl;                       /* 0x35 */
-    char        ip[46];                         /* 0x36 */
-    uint64      journalVolumeAddress;           /* 0x64 */
-    char        replayHostUUID[16];             /* 0x6c */
-    char        _unk[24];                       /* 0x7c */
-    uint64      replayHostHB;                   /* 0x94 */
-    uint64      replayHostHBgen;                /* 0x9c */
+struct FS3_Descriptor {
+    uint32          magic;                          /* 0x00 */
+    uint32          majorVersion;                   /* 0x04 */
+    uint8           minorVersion;                   /* 0x08 */
+    UUID            uuid;                           /* 0x09 */
+    FS3_Config      config;                         /* 0x19 */
+    char            fsLabel[128];                   /* 0x1d */
+    uint32          diskBlockSize;                  /* 0x9d */
+    uint64          fileBlockSize;                  /* 0xa1 */
+    uint32          creationTime;                   /* 0xa9 */
+    uint32          snapID;                         /* 0xad */
+    FDS_VolInfo     volInfo;                        /* 0xb1 */
+    uint32          fdcClusterGroupOffset;          /* 0xd1 */
+    uint32          fdcClustersPerGroup;            /* 0xd5 */
+    uint32          subBlockSize;                   /* 0xd9 */
+    uint32          maxJournalSlotsPerTxn;          /* 0xdd */
+    uint64          pb2VolAddr;                     /* 0xe1 */
+    uint32          pb2FDAddr;                      /* 0xe9 */
+    char            hostUuid[16];                   /* 0xed */
+    uint64          gblGeneration;                  /* 0xfd */
+    uint64          sddVolAddr;                     /* 0x105 */
+    uint32          sddFDAddr;                      /* 0x10d */
+    uint8           checksumType;                   /* 0x111 */
+    FS3_UnmapPriority   unmapPriority;              /* 0x112 */
+    char            pad1[4];                        /* 0x114 */
+    uint64          checksumGen;                    /* 0x118 */
+    FS3_Checksum    checksum;                       /* 0x120 */
+    uint32          physDiskBlockSize;              /* 0x130 */
+    uint32          mdAlignment;                    /* 0x134 */
+    uint16          sfbToLfbShift;                  /* 0x138 */
+    uint16          reserved16_1;                   /* 0x13a */
+    uint16          reserved16_2;                   /* 0x13c */
+    uint16          ptrBlockShift;                  /* 0x13e */
+    uint16          sfbAddrBits;                    /* 0x140 */
+    uint16          reserved16_3;                   /* 0x142 */
+    uint32          tbzGranularity;                 /* 0x144 Also called unmapGranularity*/
+    uint32          journalBlockSize;               /* 0x148 */
+    uint32          leaseIntervalMs;                /* 0x14c */
+    uint32          reclaimWindowMs;                /* 0x150 */
+    uint64          localStampUS;                   /* 0x154 */
+    char            localMountOwnerMacAddr[6];      /* 0x15c */
+    FS3_UnmapMethod unmapMethod;                    /* 0x162 */
+    uint32          unmapBandwidth;                 /* 0x163 */
+    uint32          unmapBandwidthMin;              /* 0x167 */
+    uint32          unmapBandwidthMax;              /* 0x16b */
 };
 
 /* === Resource metadata === */
 
-enum ResourceType {
-    NONE = 0,
-    FB = 1,             /* (Small) File Block */
-    SB = 2,             /* Sub-Block */
-    PB = 3,             /* Pointer Block */
-    FD = 4,             /* File Descriptor */
-    PB2 = 5,            /* Pointer Block 2 */
-    JB = 6,             /* Journal Block */
-    LFB = 7,            /* Large File Block */
+enum FS3_ResourceTypeID {
+    /* FS3_RESTYPE_... */
+    INVALID             = 0,
+    FILE_BLOCK          = 1,
+    SMALL_FILE_BLOCK    = 1,
+    SUB_BLOCK           = 2,
+    PTR_BLOCK           = 3,
+    FILE_DESC           = 4,
+    PTR2_BLOCK          = 5,                        /* Don't have a better name */
+    JOURNAL_BLOCK       = 6,
+    LARGE_FILE_BLOCK    = 7,
+    SENTINEL,
 };
 
-#define VMFS_RESOURCE_META_SIGNATURE    0x72666D64  // dmcr
-
-struct Res3_Metadata {
-    uint32      resourcePerCluster;
-    uint32      clustersPerClusterGroup;
-    uint32      firstClusterGroupOffset;
-    uint32      resourceSize;
-    uint32      clusterGroupSize;
-    uint32      numResourcesLo;
-    uint32      numClusterGroups;
-    uint32      numResourcesHi;
-    uint32      signature;
-    uint32      version;
-    uint32      flags;
-    uint16      affinityPerResourceCluster;
-    uint16      affinityPerResource;
-    uint32      bitsPerResource;
-    uint32      childMetaOffset;
-    uint32      parentResourcesPerCluster;
-    uint32      parentClustersPerClusterGroup;
-    uint32      parentClusterGroupSize;
+enum Res3PriorityType {
+    /* RES3_PRIORITY_... */
+    DEFAULT,
+    JOURNAL             = 100000,
+    MAX                 = 0x7fffffff
 };
 
-struct Res3_ClusterMetaVMFS5 {
-    uint32      clusterNum;
-    uint32      totalResources;
-    uint32      freeResources;
-    uint32      nextFreeIdx;
+#define FS3_RFMD_SIGNATURE              0x72666D64  /* rfmd */
+#define FS3_RCMD_SIGNATURE              0x72636D64  /* rcmd */
+
+struct FS3_ResFileMetadata {
+    uint32          resourcesPerCluster;            /* 0x00 */
+    uint32          clustersPerGroup;               /* 0x04 */
+    uint32          clusterGroupOffset;             /* 0x08 */
+    uint32          resourceSize;                   /* 0x0c */
+    uint32          clusterGroupSize;               /* 0x10 */
+    uint32          numResourcesLo;                 /* 0x14 */
+    uint32          numClusterGroups;               /* 0x18 */
+    uint32          numResourcesHi;                 /* 0x1c */
+    uint32          signature;                      /* 0x20 */
+    uint32          version;                        /* 0x24 */
+    uint32          flags;                          /* 0x28 0x02 = has parent?, 0x20 = HasUnmapBitmap */
+    uint16          affinityPerCluster;             /* 0x2c */
+    uint16          affinityPerResource;            /* 0x2e */
+    uint32          bitsPerResource;                /* 0x30 */
+    uint32          childMetaOffset;                /* 0x34 */
+    uint32          parentResourcesPerCluster;      /* 0x38 */
+    uint32          parentClustersPerGroup;         /* 0x3c */
+    uint32          parentClusterGroupSize;         /* 0x40 */
+    char            _unknown[16];                   /* 0x44 */
+    uint32          convertedClusters;              /* 0x54 */
 };
 
-#define VMFS6_CLUSTER_META_SIGNATURE    0x72636D64  // dmcr
+struct FS3_ResourceClusterMD {
+    uint32          clusterNum;
+    uint32          totalResources;
+    uint32          freeResources;
+    uint32          nextFreeIdx;
+    uint8           bitmap[64];
+    uint8           typeData[16];
+    Res3PriorityType    priority;
+};
 
+/* TODO: This is not fully researched yet */
 struct Res3_ClusterMetaVMFS6 {
-    char        _pad[16];                       /* 0x00 */
-    uint32      signature;                      /* 0x10 */
-    uint32      priority;                       /* 0x14 */
-    uint64      clusterNum;                     /* 0x18 */
-    uint16      totalResources;                 /* 0x20 */
-    uint16      freeResources;                  /* 0x22 */
-    uint16      unk1;                           /* 0x24 */
-    uint16      affinityCount;                  /* 0x26 */
-    char        _unk[2328];                     /* 0x28 */
+    char            _pad[16];                       /* 0x00 */
+    uint32          signature;                      /* 0x10 */
+    uint32          priority;                       /* 0x14 */
+    uint64          clusterNum;                     /* 0x18 */
+    uint16          totalResources;                 /* 0x20 */
+    uint16          freeResources;                  /* 0x22 */
+    uint16          unk1;                           /* 0x24 */
+    uint16          affinityCount;                  /* 0x26 */
+    char            _unk[2328];                     /* 0x28 */
     /* List of tuple of addresses start here, referenced as overflow keys */
 };
 
-/* === Disk lock info === */
+/* === Disk lock and heartbeat === */
+/* TODO: This is not fully researched yet */
 
-#define VMFS5_LOCK_SIZE                 0x200
+struct FS3_HBGen {
+    uint64          gen;
+};
 
-struct FS3_DiskLockInfo {
-    uint32      type;
-    uint64      offset;
-    uint64      hbAddress;
-    uint64      hbGeneration;
-    uint64      generation;
-    uint32      mode;
-    char        ownerUuid[16];
-    uint64      modificationTime;
-    uint32      numHolders;
-    char        _unk0[288];
-    uint32      gblNumHolders;
-    uint64      gblGeneration;
-    uint32      gblBrk;
+struct FS3_LockHolder {
+    FS3_VolAddress  hbAddr;
+    FS3_HBGen       hbGen;
+    UUID            uid;
+};
+
+struct FS3_DiskLock {
+    uint32          type;                           /* 0x00 */
+    FS3_VolAddress  addr;                           /* 0x04 */
+    FS3_VolAddress  hbAddr;                         /* 0x0c */
+    FS3_HBGen       hbGen;                          /* 0x14 */
+    uint64          token;                          /* 0x1c */
+    uint32          mode;                           /* 0x24 */
+    UUID            owner;                          /* 0x28 */
+    uint64          mtime;                          /* 0x38 */
+    uint32          numHolders;                     /* 0x40 */
+    FS3_LockHolder  holders[8];                     /* 0x44 */
+    char            _unk[32];                       /* 0x144 */
+    uint32          gblNumHolders;                  /* 0x164 */
+    uint64          gblGen;                         /* 0x168 */
+    uint32          gblBrk;                         /* 0x170 */
+};
+
+struct FS3_Heartbeat {
+    uint32          state;                          /* 0x00 */
+    FS3_VolAddress  addr;                           /* 0x04 */
+    FS3_HBGen       hbGen;                          /* 0x0c */
+    uint64          stamp;                          /* 0x14 */
+    UUID            owner;                          /* 0x1c */
+    FS3_Address     journalAddr;                    /* 0x2c */
+    uint32          driveX;                         /* 0x30 drv %u.%u */
+    uint8           driveY;                         /* 0x34 */
+    uint8           lockImpl;                       /* 0x35 */
+    char            ip[46];                         /* 0x36 */
+    uint64          journalVolAddr;                 /* 0x64 */
+    UUID            replayHost;                     /* 0x6c */
+    char            _unk[24];                       /* 0x7c */
+    uint64          replayHostHB;                   /* 0x94 */
+    FS3_HBGen       replayHostHBgen;                /* 0x9c */
 };
 
 /* === FD/inode info === */
 
-enum FileType {
-    Directory = 0x2,
-    Regular = 0x3,
-    Symlink = 0x4,
-    System = 0x5,
-    RDM = 0x6,
+#define FS3_FDMD_SIGNATURE              0x66646D64  /* fdmd */
+
+struct FS3_FileMetadata {
+    FS3_FDAddr      descAddr;                       /* 0x00 */
+    uint32          generation;                     /* 0x04 */
+    uint32          linkCount;                      /* 0x08 */
+    FS3_DescriptorType  type;                       /* 0x0c */
+    uint32          flags;                          /* 0x10 1 = Large file allocation? */
+    uint64          fileLength;                     /* 0x14 */
+    uint64          blockSize;                      /* 0x1c */
+    uint64          numBlocks;                      /* 0x24 */
+    uint32          mtime;                          /* 0x2c */
+    uint32          ctime;                          /* 0x30 */
+    uint32          atime;                          /* 0x34 */
+    uint32          uid;                            /* 0x38 */
+    uint32          gid;                            /* 0x3c */
+    uint32          mode;                           /* 0x40 */
+    uint32          zeroLevelAddrType;              /* 0x44 */
+    uint32          numTBZBlocksLo;                 /* 0x48 */
+    uint32          numCOWBlocksLo;                 /* 0x4c */
+    uint32          newSinceEpochLo;                /* 0x50 */
+    uint32          numTBZBlocksHi;                 /* 0x54 */
+    uint32          numCOWBlocksHi;                 /* 0x58 */
+    uint32          numPointerBlocks;               /* 0x5c */
+    uint32          newSinceEpochHi;                /* 0x60 */
+    uint32          signature;                      /* 0x64 */
+    uint32          affinityFD;                     /* 0x68 */
+    uint32          tbzGranularityShift;            /* 0x6c */
+    uint32          parentFD;                       /* 0x70 */
+    uint32          lastSFBClusterNum;              /* 0x74 */
+    uint32          _unk4;                          /* 0x78 */
+    uint32          _unk5;                          /* 0x7c */
+    uint32          affinityBitmap;                 /* 0x80 */
+    uint8           numPreAllocBlocks;              /* 0x84 */
+    uint8           _unk7;                          /* 0x85 */
+    uint8           _unk8;                          /* 0x86 */
+    uint8           _unk9;                          /* 0x87 */
+    uint8           _unk10;                         /* 0x88 */
+    uint8           blockOffsetShift;               /* 0x89 */
+    uint8           numTracked;                     /* 0x8a */
+    uint8           _unk12;                         /* 0x8b */
+    uint32          numLFB;                         /* 0x8c */
+    char            _unk13[216];                    /* 0x90 */
+    uint32          lastFreeSFBC;                   /* 0x168 */
 };
 
-struct FS3_FileDescriptor {
-    uint32      address;                        /* 0x00 */
-    uint32      generation;                     /* 0x04 */
-    uint32      numLinks;                       /* 0x08 */
-    uint32      type;                           /* 0x0c */
-    uint32      flags;                          /* 0x10 */
-    uint64      length;                         /* 0x14 */
-    uint64      blockSize;                      /* 0x1c */
-    uint64      numBlocks;                      /* 0x24 */
-    uint32      modificationTime;               /* 0x2c */
-    uint32      creationTime;                   /* 0x30 */
-    uint32      accessTime;                     /* 0x34 */
-    uint32      uid;                            /* 0x38 */
-    uint32      gid;                            /* 0x3c */
-    uint32      mode;                           /* 0x40 */
-    uint32      zla;                            /* 0x44 */
-    uint32      tbzLo;                          /* 0x48 */
-    uint32      cowLo;                          /* 0x4c */
-    uint32      newSinceEpochLo;                /* 0x50 */
-    uint32      tbzHi;                          /* 0x54 */
-    uint32      cowHi;                          /* 0x58 */
-    uint32      numPointerBlocks;               /* 0x5c */
-    uint32      newSinceEpochHi;                /* 0x60 */
-    uint32      _unk1;                          /* 0x64 */
-    uint32      affinityFD;                     /* 0x68 */
-    uint32      tbzGranularityShift;            /* 0x6c */
-    uint32      parentFD;                       /* 0x70 */
-    uint32      lastSFBClusterNum;              /* 0x74 */
-    uint32      _unk4;                          /* 0x78 */
-    uint32      _unk5;                          /* 0x7c */
-    uint32      _unk6;                          /* 0x80 */
-    uint8       numPreAllocBlocks;              /* 0x84 */
-    uint8       _unk7;                          /* 0x85 */
-    uint8       _unk8;                          /* 0x86 */
-    uint8       _unk9;                          /* 0x87 */
-    uint8       _unk10;                         /* 0x88 */
-    uint8       blockOffsetShift;               /* 0x89 */
-    uint8       numTracked;                     /* 0x8a */
-    uint8       _unk12;                         /* 0x8b */
-    uint32      numLFB;                         /* 0x8c */
-    char        _unk13[216];                    /* 0x90 */
-    uint32      lastFreeSFBC;                   /* 0x168 */
-    // char        _unk14[148];                    /* 0x16c */
+struct FS3_RawDiskMap {
+    SCSI_DiskId     diskId;
 };
-
-// Temporary until more info is available
-#define VMFS5_ZLA_BASE                  4301    // 0x10d1
 
 /* === Directory entries === */
 
-#define VMFS5_DIR_ENTRY_SIZE            0x8c
+#define FS3_MAX_FILE_NAME_LENGTH        128
+#define FS6_MAX_FILE_NAME_LENGTH        256
 
 struct FS3_DirEntry {
-    uint32      type;
-    uint32      address;
-    uint32      generation;
-    char        name[128];
+    FS3_DescriptorType  type;                       /* 0x00 */
+    FS3_FDAddr      descAddr;                       /* 0x04 */
+    uint32          generation;                     /* 0x08 */
+    char            name[FS3_MAX_FILE_NAME_LENGTH]; /* 0x0c */
+};                                                  /* 0x8c */
+
+#define FS6_DIR_HEADER_VERSION          0xF50001
+#define FS6_DIR_HEADER_DEBUG_VERSION    0xFDC001
+#define FS6_DIR_HEADER_BLOCK_SIZE       0x10000
+
+#define FS6_DIR_HASH_MAX_ENTRIES        16001
+#define FS6_DIR_HASH_ROOT_RESERVED      28
+#define FS6_DIR_HASH_MAX_ROOT_ENTRIES   (FS6_DIR_HASH_MAX_ENTRIES - FS6_DIR_HASH_ROOT_RESERVED)
+
+#define FS6_DIR_LINKS_PER_GROUP         12
+
+enum FS6_DirBlockType {
+    DIRENT              = 0x1,
+    LINK                = 0x2,
+    ALLOCATION_MAP      = 0x3,
 };
-
-#define VMFS6_DIR_FS_VERSION            0xF50001
-#define VMFS6_DIR_FDC_VERSION           0xFDC001
-#define VMFS6_DIR_BLOCK_BASE            0x10000
-
-#define VMFS6_DIR_ENTRY_SIZE            0x120
 
 struct FS6_DirEntry {
-    uint32      type;
-    uint32      address;
-    uint32      generation;
-    uint32      hash;
-    uint64      offset;
-    char        name[256];
-    uint64      _unk1;
-};
+    FS3_DescriptorType  type;                       /* 0x00 */
+    uint32          address;                        /* 0x04 */
+    uint32          generation;                     /* 0x08 */
+    uint16          hashIndex;                      /* 0x0c */
+    uint16          linkHash;                       /* 0x0e */
+    uint64          offset;                         /* 0x10 */
+    char            name[256];                      /* 0x18 */
+    uint64          _unk1;                          /* 0x118 */
+};                                                  /* 0x120 */
 
 struct FS6_DirHeader {
-  uint32        version;
-  uint32        numEntries;
-  uint32        numAllocated;
-  uint32        _unk1;
-  uint64        _unk2;
-  char          _gap0[912];
-  uint64        _unk4;
-  uint64        _unk5;
-  FS6_DirEntry  selfEntry;
-  FS6_DirEntry  parentEntry;
-};
+    uint32          version;                        /* 0x00 */
+    uint32          numEntries;                     /* 0x04 */
+    uint32          numAllocated;                   /* 0x08 */
+    uint32          numAllocationMapBlocks;         /* 0x0c */
+    uint32          allocationMapBlocks[128];       /* 0x10 */
+    char            _gap0[408];                     /* 0x210 */
+    uint64          checksum;                       /* 0x3A8 */
+    uint64          checksumGen;                    /* 0x3B0 */
+    FS6_DirEntry    selfEntry;                      /* 0x3B8 */
+    FS6_DirEntry    parentEntry;                    /* 0x4D8 */
+};                                                  /* 0x5F8 */
+
+struct FS6_DirBlockHeader {
+    uint16          version;                        /* 0x00 */
+    uint16          type;                           /* 0x02 */
+    uint16          totalSlots;                     /* 0x04 */
+    uint16          freeSlots;                      /* 0x06 */
+    char            bitmap[56];                     /* 0x08 */
+};                                                  /* 0x40 */
+
+struct FS6_DirLink {
+    uint32          location;                       /* 0x00 */
+    uint16          hash;                           /* 0x04 */
+};                                                  /* 0x06 */
+
+struct FS6_DirLinkGroup {
+    uint16          hashIndex;                      /* 0x00 The hash index this is a link for */
+    uint8           totalLinks;                     /* 0x02 */
+    uint8           freeLinks;                      /* 0x03 */
+    uint8           nextFreeIdx;                    /* 0x04 */
+    uint8           pad1;                           /* 0x05 */
+    FS6_DirLink     links[FS6_DIR_LINKS_PER_GROUP]; /* 0x06 */
+    uint32          nextGroup;                      /* 0x4e */
+    uint16          pad2;                           /* 0x52 */
+};                                                  /* 0x54 */
 """
 
 c_vmfs = cstruct().load(vmfs_def)
 
-ADDRESS_TYPE_MASK = 7
-ResourceType = c_vmfs.ResourceType
-FileType = c_vmfs.FileType
-
-
-def bsf(value: int, size: int = 32) -> int:
-    """Count the number of zero bits in an integer of a given size."""
-    for i in range(size):
-        if value & (1 << i):
-            return i
-    return 0
-
-
-def type_to_mode(type_: FileType) -> int:
-    if type_ == FileType.Directory:
-        return stat.S_IFDIR
-    if type_ == FileType.Symlink:
-        return stat.S_IFLNK
-    return stat.S_IFREG
-
-
-def vmfs_uuid(buf: bytes) -> str:
-    uuid1, uuid2, uuid3, uuid4 = struct.unpack("<IIH6s", buf)
-    return f"{uuid1:08x}-{uuid2:08x}-{uuid3:04x}-{uuid4.hex()}"
+FS3_Config = c_vmfs.FS3_Config
+FS3_AddrType = c_vmfs.FS3_AddrType
+FS3_ResourceTypeID = c_vmfs.FS3_ResourceTypeID
+FS3_ZeroLevelAddrType = c_vmfs.FS3_ZeroLevelAddrType
+FS3_DescriptorType = c_vmfs.FS3_DescriptorType
+FS6_DirBlockType = c_vmfs.FS6_DirBlockType
