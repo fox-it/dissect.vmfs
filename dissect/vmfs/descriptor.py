@@ -19,7 +19,13 @@ from dissect.vmfs.address import (
     address_type,
 )
 from dissect.vmfs.c_vmfs import FS3_AddrType, FS3_DescriptorType, FS3_ZeroLevelAddrType, FS6_DirBlockType, c_vmfs
-from dissect.vmfs.exception import NotAnRDMFileError, NotASymlinkError, VolumeNotAvailableError
+from dissect.vmfs.exception import (
+    FileNotFoundError,
+    NotADirectoryError,
+    NotAnRDMFileError,
+    NotASymlinkError,
+    VolumeNotAvailableError,
+)
 from dissect.vmfs.util import vmfs_uuid
 
 if TYPE_CHECKING:
@@ -137,8 +143,8 @@ class FileDescriptor:
         Lock [type {li.type:x} offset {li.addr.offset} v {li.token}, hb offset {li.hbAddr.offset}
         gen {li.hbGen.gen}, mode {li.mode}, owner {vmfs_uuid(li.owner)} mtime {li.mtime}
         num {li.numHolders} gblnum {li.gblNumHolders} gblgen {li.gblGen} gblbrk {li.gblBrk}]
-        Addr <{address_type(self.address)}, {cluster}, {resource}>, gen {fd.generation}, links {fd.numLinks}, type {type_str}, flags {fd.flags:#x}, uid {fd.uid}, gid {fd.gid}, mode {fd.mode:o}
-        len {fd.length}, nb {fd.numBlocks} tbz {fd.numTBZBlocksLo | fd.numTBZBlocksHi << 32}, cow {fd.numCOWBlocksLo | fd.numCOWBlocksHi << 32}, newSinceEpoch {fd.newSinceEpochLo | fd.newSinceEpochHi << 32}, zla {fd.zla}, bs {fd.blockSize}
+        Addr <{address_type(self.address)}, {cluster}, {resource}>, gen {fd.generation}, links {fd.linkCount}, type {type_str}, flags {fd.flags:#x}, uid {fd.uid}, gid {fd.gid}, mode {fd.mode:o}
+        len {fd.fileLength}, nb {fd.numBlocks} tbz {fd.numTBZBlocksLo | fd.numTBZBlocksHi << 32}, cow {fd.numCOWBlocksLo | fd.numCOWBlocksHi << 32}, newSinceEpoch {fd.newSinceEpochLo | fd.newSinceEpochHi << 32}, zla {fd.zeroLevelAddrType}, bs {fd.blockSize}
         affinityFD <{address_type(fd.affinityFD)},{affinity_cluster},{affinity_resource}>, parentFD <{address_type(fd.parentFD)},{parent_cluster},{parent_resource}>, tbzGranularityShift {fd.tbzGranularityShift}, numLFB {fd.numLFB}
         lastSFBClusterNum {fd.lastSFBClusterNum}, numPreAllocBlocks {fd.numPreAllocBlocks}, numPointerBlocks {fd.numPointerBlocks}
         """).strip()  # noqa: E501
