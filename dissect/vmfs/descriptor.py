@@ -19,7 +19,13 @@ from dissect.vmfs.address import (
     address_type,
 )
 from dissect.vmfs.c_vmfs import FS3_AddrType, FS3_DescriptorType, FS3_ZeroLevelAddrType, FS6_DirBlockType, c_vmfs
-from dissect.vmfs.exception import NotAnRDMFileError, NotASymlinkError, VolumeNotAvailableError
+from dissect.vmfs.exception import (
+    FileNotFoundError,
+    NotADirectoryError,
+    NotAnRDMFileError,
+    NotASymlinkError,
+    VolumeNotAvailableError,
+)
 from dissect.vmfs.util import vmfs_uuid
 
 if TYPE_CHECKING:
@@ -137,8 +143,8 @@ class FileDescriptor:
         Lock [type {li.type:x} offset {li.addr.offset} v {li.token}, hb offset {li.hbAddr.offset}
         gen {li.hbGen.gen}, mode {li.mode}, owner {vmfs_uuid(li.owner)} mtime {li.mtime}
         num {li.numHolders} gblnum {li.gblNumHolders} gblgen {li.gblGen} gblbrk {li.gblBrk}]
-        Addr <{address_type(self.address)}, {cluster}, {resource}>, gen {fd.generation}, links {fd.numLinks}, type {type_str}, flags {fd.flags:#x}, uid {fd.uid}, gid {fd.gid}, mode {fd.mode:o}
-        len {fd.length}, nb {fd.numBlocks} tbz {fd.numTBZBlocksLo | fd.numTBZBlocksHi << 32}, cow {fd.numCOWBlocksLo | fd.numCOWBlocksHi << 32}, newSinceEpoch {fd.newSinceEpochLo | fd.newSinceEpochHi << 32}, zla {fd.zla}, bs {fd.blockSize}
+        Addr <{address_type(self.address)}, {cluster}, {resource}>, gen {fd.generation}, links {fd.linkCount}, type {type_str}, flags {fd.flags:#x}, uid {fd.uid}, gid {fd.gid}, mode {fd.mode:o}
+        len {fd.fileLength}, nb {fd.numBlocks} tbz {fd.numTBZBlocksLo | fd.numTBZBlocksHi << 32}, cow {fd.numCOWBlocksLo | fd.numCOWBlocksHi << 32}, newSinceEpoch {fd.newSinceEpochLo | fd.newSinceEpochHi << 32}, zla {fd.zeroLevelAddrType}, bs {fd.blockSize}
         affinityFD <{address_type(fd.affinityFD)},{affinity_cluster},{affinity_resource}>, parentFD <{address_type(fd.parentFD)},{parent_cluster},{parent_resource}>, tbzGranularityShift {fd.tbzGranularityShift}, numLFB {fd.numLFB}
         lastSFBClusterNum {fd.lastSFBClusterNum}, numPreAllocBlocks {fd.numPreAllocBlocks}, numPointerBlocks {fd.numPointerBlocks}
         """).strip()  # noqa: E501
@@ -232,13 +238,19 @@ class FileDescriptor:
 
         Access the mode through the :attr:`metadata` attribute to get the raw mode value.
         """
-        if stat.S_IFMT(self.metadata.mode) == stat.S_IFDIR:
+        if stat.S_IFMT(self.metadata.mode):
+            # If the mode already has a type bit set, return it as is
             return self.metadata.mode
 
-        if self.type == FS3_DescriptorType.SYMLINK:
+        if self.is_dir():
+            return self.metadata.mode | stat.S_IFDIR
+
+        if self.is_symlink():
             return self.metadata.mode | stat.S_IFLNK
-        if self.type == FS3_DescriptorType.RDM:
+
+        if self.is_rdm():
             return self.metadata.mode | stat.S_IFBLK
+
         return self.metadata.mode | stat.S_IFREG
 
     @property
@@ -272,11 +284,11 @@ class FileDescriptor:
 
     def is_dir(self) -> bool:
         """Return whether this file descriptor is a directory."""
-        return self.type == FS3_DescriptorType.DIRECTORY
+        return self.type == FS3_DescriptorType.DIRECTORY or (self.is_system() and stat.S_ISDIR(self.metadata.mode))
 
     def is_file(self) -> bool:
         """Return whether this file descriptor is a regular file."""
-        return self.type == FS3_DescriptorType.REGFILE
+        return self.type == FS3_DescriptorType.REGFILE or (self.is_system() and not stat.S_ISDIR(self.metadata.mode))
 
     def is_symlink(self) -> bool:
         """Return whether this file descriptor is a symlink."""

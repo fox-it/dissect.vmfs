@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import stat
 
 import pytest
 
@@ -73,11 +74,20 @@ def test_vmfs_basic(path: str | list[str], type: str, request: pytest.FixtureReq
             assert FS3_Config.DENSE_SBPC in fs.descriptor.config
 
         root_dir = fs.get("/").listdir()
-        for name in (".vh.sf", ".pb2.sf", ".pbc.sf", ".fbb.sf", ".fdc.sf", ".sbc.sf") + (
+        for name in (".vh.sf", ".pb2.sf", ".pbc.sf", ".fbb.sf", ".fdc.sf", ".sbc.sf", ".sdd.sf") + (
             (".jbc.sf",) if fs.is_vmfs6 else ()
         ):
             assert name in root_dir, f"Expected {name} in root directory"
-            assert root_dir[name].fd.is_system(), f"{name} should be a system file"
+
+            fd = root_dir[name].fd
+            assert fd.is_system(), f"{name} should be a system file"
+
+            if name == ".sdd.sf":
+                assert fd.is_dir(), f"{name} should be a directory"
+                assert stat.S_ISDIR(fd.mode), f"{name} should be a directory"
+            else:
+                assert fd.is_file(), f"{name} should be a regular file"
+                assert stat.S_ISREG(fd.mode), f"{name} should be a regular file"
 
 
 @pytest.mark.parametrize(
@@ -92,6 +102,11 @@ def test_vmfs_content(path: str) -> None:
     with gzip.open(absolute_path(f"_data/{path}"), "rb") as fh:
         vs = lvm.LVM(fh)
         fs = vmfs.VMFS(vs.volumes[0].open())
+
+        # Test root
+        fd = fs.get("/")
+        assert fd.is_dir()
+        assert stat.S_ISDIR(fd.mode)
 
         # Test a small file
         fd = fs.get("small")
@@ -111,11 +126,13 @@ def test_vmfs_content(path: str) -> None:
         # Test a symlink
         fd = fs.get("symlink")
         assert fd.is_symlink()
+        assert stat.S_ISLNK(fd.mode)
         assert fd.link == f"/vmfs/volumes/{fs.label}/small"
 
         # Test a directory
         fd = fs.get("directory")
         assert fd.is_dir()
+        assert stat.S_ISDIR(fd.mode)
         contents = fd.listdir()
 
         assert set(contents.keys()) == {f"file{i}" for i in range(1, 101)} | {".", ".."}, (
@@ -213,5 +230,6 @@ def _assert_is_file(fd: vmfs.FileDescriptor, size: int, zla: FS3_ZeroLevelAddrTy
     assert not fd.is_symlink()
     assert not fd.is_rdm()
     assert not fd.is_system()
+    assert stat.S_ISREG(fd.mode)
     assert fd.size == size
     assert fd.zla == zla
