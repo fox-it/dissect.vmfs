@@ -131,7 +131,7 @@ class FileDescriptor:
         type_str = {
             FS3_DescriptorType.DIRECTORY: "dir",
             FS3_DescriptorType.REGFILE: "reg",
-            FS3_DescriptorType.SYSTEM: "sys",
+            FS3_DescriptorType.SYSFILE: "sys",
             FS3_DescriptorType.RDM: "rdm",
         }.get(self.type, "oth")
 
@@ -451,7 +451,8 @@ class FileDescriptor5(FileDescriptor):
             primary_num = block_num >> self.vmfs._ptr_block_num_shift
             secondary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
 
-            block = self.blocks[primary_num]
+            if (block := self.blocks[primary_num]) == 0:
+                return 0
             pb_buf = self.vmfs.resources.read(block)
 
             return _get_uint32_index(pb_buf, secondary_num)
@@ -461,10 +462,12 @@ class FileDescriptor5(FileDescriptor):
             secondary_num = (block_num >> self.vmfs._ptr_block_num_shift) & ((1 << self.vmfs._ptr_block_num_shift) - 1)
             tertiary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
 
-            block = self.blocks[primary_num]
+            if (block := self.blocks[primary_num]) == 0:
+                return 0
             pb_buf = self.vmfs.resources.read(block)
 
-            block = _get_uint32_index(pb_buf, secondary_num)
+            if (block := _get_uint32_index(pb_buf, secondary_num)) == 0:
+                return 0
             pb_buf = self.vmfs.resources.read(block)
 
             return _get_uint32_index(pb_buf, tertiary_num)
@@ -482,7 +485,10 @@ class FileDescriptor5(FileDescriptor):
         if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
             return self._resolve_resident_offset(offset), 0
 
-        block = self._offset_to_block_address(offset)
+        if (block := self._offset_to_block_address(offset)) == 0:
+            # Return early with a TBZ set for 0 blocks
+            return 0, 1
+
         type = address_type(block)
 
         if resource := self.vmfs.resources.get(type):
@@ -718,7 +724,8 @@ class FileDescriptor6(FileDescriptor):
             primary_num = block_num >> self.vmfs._ptr_block_num_shift
             secondary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
 
-            block = self.blocks[primary_num]
+            if (block := self.blocks[primary_num]) == 0:
+                return 0
 
             # Pointer block data can be stored in the .pbc.sf file itself, in .sbc.sf or as regular file block
             # Use the address type to figure it out
@@ -730,10 +737,12 @@ class FileDescriptor6(FileDescriptor):
             secondary_num = (block_num >> self.vmfs._ptr_block_num_shift) & ((1 << self.vmfs._ptr_block_num_shift) - 1)
             tertiary_num = block_num & ((1 << self.vmfs._ptr_block_num_shift) - 1)
 
-            block = self.blocks[primary_num]
+            if (block := self.blocks[primary_num]) == 0:
+                return 0
             pb_buf = self.vmfs.resources.read(block)
 
-            block = _get_uint64_index(pb_buf, secondary_num)
+            if (block := _get_uint64_index(pb_buf, secondary_num)) == 0:
+                return 0
             pb_buf = self.vmfs.resources.read(block)
 
             return _get_uint64_index(pb_buf, tertiary_num)
@@ -751,7 +760,9 @@ class FileDescriptor6(FileDescriptor):
         if self.zla == FS3_ZeroLevelAddrType.FILE_DESCRIPTOR_RESIDENT:
             return self._resolve_resident_offset(offset), 0
 
-        block = self._offset_to_block_address(offset)
+        if (block := self._offset_to_block_address(offset)) == 0:
+            # Return early with a TBZ set for 0 blocks
+            return 0, 0xFF
         type = address_type(block)
 
         if resource := self.vmfs.resources.get(type):
@@ -970,7 +981,7 @@ class BlockStream(AlignedStream):
     Eventual file blocks can also differ between FB (filesystem block), SB (sub/small block) and
     LFB (large filesystem block).
 
-    See :func:`_resolve_offset_vmfs5` and :func:`_resolve_offset_vmfs6` for more information on how
+    See :func:`FileDescriptor5._resolve_offset` and :func:`FileDescriptor6._resolve_offset` for more information on how
     to resolve offsets.
     """
 

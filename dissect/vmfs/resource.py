@@ -367,7 +367,9 @@ class ResourceManager:
         self.resources = {}
 
     def __repr__(self) -> str:
-        return f"<ResourceManager {' '.join(RESOURCE_TYPE_ABBREVIATIONS[r] for r in self.resources)}>"
+        return (
+            f"<ResourceManager {' '.join(RESOURCE_TYPE_ABBREVIATIONS[FS3_ResourceTypeID(r)] for r in self.resources)}>"
+        )
 
     def __getitem__(self, type: FS3_ResourceTypeID | int) -> ResourceFile:
         """Get a resource file by its type."""
