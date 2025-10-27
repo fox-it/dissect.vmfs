@@ -233,3 +233,21 @@ def _assert_is_file(fd: vmfs.FileDescriptor, size: int, zla: FS3_ZeroLevelAddrTy
     assert stat.S_ISREG(fd.mode)
     assert fd.size == size
     assert fd.zla == zla
+
+
+@pytest.mark.parametrize(
+    ("path"),
+    [
+        pytest.param("vmfs/zero5.bin.gz", id="vmfs5"),
+        pytest.param("vmfs/zero6.bin.gz", id="vmfs6"),
+    ],
+)
+def test_sparse(path: str) -> None:
+    """Test that an empty disk but with a valid ZLA is correctly interpreted as sparse."""
+    with gzip.open(absolute_path(f"_data/{path}"), "rb") as fh:
+        vs = lvm.LVM(fh)
+        fs = vmfs.VMFS(vs.volumes[0].open())
+
+        fd = fs.get("empty-flat.vmdk")
+        assert fd.zla == FS3_ZeroLevelAddrType.POINTER_BLOCK
+        assert fd.open().read(512) == b"\x00" * 512
