@@ -124,7 +124,6 @@ class FileDescriptor:
 
         Mimicks ``vmkfstool -D`` output.
         """
-
         fd = self.metadata
         li = self.lock_info
 
