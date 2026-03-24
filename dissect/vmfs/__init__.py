@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dissect.vmfs.descriptor import DirEntry, FileDescriptor
 from dissect.vmfs.exception import (
     Error,
